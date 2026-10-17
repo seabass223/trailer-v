@@ -1,10 +1,12 @@
 /**
  * Timeline pointer interactions. Moves use an imperative ghost (no React work per frame);
- * trims and fades show a transient draft so the magnetic track ripples live and the
- * preview shows the new edge frame. Each gesture commits exactly one undo step.
+ * trims, fades and volume show a transient draft so the magnetic track ripples live, the
+ * preview shows the new edge frame and playback hears the new gain. Each gesture commits
+ * exactly one undo step.
  */
 import { engine } from '@/engine/client'
-import { moveClipTo, trim } from '@/features/editor/actions'
+import { moveClipTo, trim, updateClip } from '@/features/editor/actions'
+import { formatDb } from '@/lib/utils'
 import { clearDraft, commit, select, setDraft, toggleSelect, useEditor } from '@/state/store'
 import { trackAccepts } from '@shared/factory'
 import type { Clip, Micros, Project } from '@shared/model'
@@ -272,6 +274,77 @@ export function beginFade(e: PointerEvent, clip: Clip, which: 'fadeIn' | 'fadeOu
         if (c) c[which] = { ...c[which], duration: value }
       })
     }
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+// --- Volume line ------------------------------------------------------------
+
+export const MAX_VOLUME = 2
+const VOLUME_PAD = 4
+const UNITY_SNAP_PX = 4
+
+/** Line position (px from the clip top) for a gain: 0% at the bottom, 100% mid, 200% top. */
+export const volumeY = (v: number, clipH: number): number => VOLUME_PAD + (1 - v / MAX_VOLUME) * (clipH - VOLUME_PAD * 2)
+
+/** Drag the volume line vertically. Shift = fine, Alt = no snap to 100%. */
+export function beginVolume(e: PointerEvent, clip: Clip, clipEl: HTMLElement): void {
+  const h = clipEl.offsetHeight
+  const perPx = MAX_VOLUME / Math.max(1, h - VOLUME_PAD * 2)
+  const initial = clip.volume
+  const tip = overlayEl('pointer-events-none absolute left-0 top-0 z-50 flex gap-1.5 rounded bg-popover px-1.5 py-0.5 text-[11px] tabular text-popover-foreground shadow')
+  tip.dataset.testid = 'volume-tip'
+  const dbEl = document.createElement('span')
+  const pctEl = document.createElement('span')
+  pctEl.className = 'text-muted-foreground'
+  tip.append(dbEl, pctEl)
+  let raw = initial
+  let value = initial
+  let lastY = e.clientY
+  let lastX = e.clientX
+  let raf = 0
+  select([clip.id])
+  document.body.style.cursor = 'ns-resize'
+
+  const show = () => {
+    const sc = view.scroller!
+    const rect = sc.getBoundingClientRect()
+    const y = clipEl.getBoundingClientRect().top + volumeY(value, h)
+    tip.style.transform = `translate(${lastX - rect.left + sc.scrollLeft + 14}px, ${y - rect.top + sc.scrollTop - 11}px)`
+    dbEl.textContent = formatDb(value)
+    pctEl.textContent = `${Math.round(value * 100)}%`
+  }
+  show()
+
+  const move = (ev: PointerEvent) => {
+    raw = Math.max(0, Math.min(MAX_VOLUME, raw - (ev.clientY - lastY) * perPx * (ev.shiftKey ? 0.1 : 1)))
+    lastY = ev.clientY
+    lastX = ev.clientX
+    const unity = !ev.altKey && !ev.shiftKey && Math.abs(raw - 1) < UNITY_SNAP_PX * perPx
+    value = unity ? 1 : ev.shiftKey ? Math.round(raw * 1000) / 1000 : Math.round(raw * 100) / 100
+    if (!raf) {
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        setDraft((d) => {
+          const c = d.clips.find((x) => x.id === clip.id)
+          if (c) c.volume = value
+        })
+        show()
+      })
+    }
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    cancelAnimationFrame(raf)
+    tip.remove()
+    document.body.style.cursor = ''
+    // Commit before dropping the draft so playback never hears the old gain in between.
+    if (value !== initial) updateClip(clip.id, `Volume ${clip.name}`, (c) => {
+      c.volume = value
+    })
+    clearDraft()
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)

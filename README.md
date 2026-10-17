@@ -68,6 +68,5 @@ npm run test:e2e
 ## Known limits
 
 - With 4K60 sources, playback can drop 1–3 frames in the first ~300 ms after pressing play while the hardware decoder ramps up. Steady-state playback is clean.
-- Text is edited in the inspector, which shows a scaled, line-break-accurate preview. Double-clicking text on the preview jumps to that editor.
 - The first drag of a session can show one ~70 ms frame. This is Chromium compiling GPU shaders on first use (partially pre-warmed).
 - Only one export can run at a time.

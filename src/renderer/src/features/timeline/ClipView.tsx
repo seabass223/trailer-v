@@ -2,12 +2,12 @@ import { AudioLines, Copy, Image as ImageIcon, Scissors, Trash2, Type, Unplug } 
 import { memo, useEffect, useRef, useState } from 'react'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { filmstrip, pcmFor, posterUrl, type FilmstripView } from '@/engine/media-client'
-import { addCrossfadeAfter, deleteSelection, duplicateSelection, splitAtPlayhead } from '@/features/editor/actions'
+import { addCrossfadeAfter, deleteSelection, duplicateSelection, splitAtPlayhead, updateClip } from '@/features/editor/actions'
 import { cn } from '@/lib/utils'
 import { select, useEditor } from '@/state/store'
 import type { Clip, MediaFile } from '@shared/model'
 import { SAMPLE_RATE } from '@shared/mixer'
-import { beginFade, beginMove, beginTrim } from './interactions'
+import { beginFade, beginMove, beginTrim, beginVolume, volumeY } from './interactions'
 
 const statFor = (files: MediaFile[], path: string | null) => files.find((f) => f.path === path)
 
@@ -114,13 +114,14 @@ export const ClipView = memo(function ClipView({ clip, pps, height, selected, of
   const width = Math.max(2, (clip.duration / 1e6) * pps)
   const fadeInW = (clip.fadeIn.duration / 1e6) * pps
   const fadeOutW = (clip.fadeOut.duration / 1e6) * pps
+  const edge = Math.min(8, width / 4)
+  const hasSound = clip.kind === 'audio' || (clip.kind === 'video' && clip.hasAudio)
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return
     e.stopPropagation()
     const r = ref.current!.getBoundingClientRect()
     const x = e.clientX - r.left
-    const edge = Math.min(8, width / 4)
     if (x < edge) beginTrim(e.nativeEvent, clip, 'start')
     else if (x > r.width - edge) beginTrim(e.nativeEvent, clip, 'end')
     else beginMove(e.nativeEvent, clip, ref.current!)
@@ -198,6 +199,33 @@ export const ClipView = memo(function ClipView({ clip, pps, height, selected, of
                 title="Drag to fade out"
               />
             </>
+          )}
+          {/* Volume line: drag vertically (0–200%), double-click resets to 100% */}
+          {hasSound && !offline && width > 24 && (
+            <div
+              data-testid="volume-line"
+              className="group/vol absolute z-10 h-2.5 -translate-y-1/2 cursor-ns-resize"
+              style={{ top: volumeY(clip.volume, height - 8), left: edge, right: edge }}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return
+                e.stopPropagation()
+                beginVolume(e.nativeEvent, clip, ref.current!)
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation()
+                if (clip.volume !== 1) updateClip(clip.id, `Reset volume ${clip.name}`, (c) => {
+                  c.volume = 1
+                })
+              }}
+            >
+              <div
+                className={cn(
+                  'pointer-events-none absolute top-1/2 h-px -translate-y-1/2 bg-white/70 shadow-[0_0_2px_rgba(0,0,0,.9)] group-hover/vol:h-0.5 group-hover/vol:bg-white',
+                  clip.kind === 'video' && clip.volume === 1 && !selected && 'opacity-0 group-hover/clip:opacity-100',
+                )}
+                style={{ left: -edge, right: -edge }}
+              />
+            </div>
           )}
           {/* Trim grips */}
           <div className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize bg-white/0 group-hover/clip:bg-white/50" />

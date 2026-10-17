@@ -1,7 +1,4 @@
 import { EditorContent, useEditor as useTiptap, useEditorState } from '@tiptap/react'
-import StarterKit from '@tiptap/starter-kit'
-import { TextAlign } from '@tiptap/extension-text-align'
-import { TextStyleKit } from '@tiptap/extension-text-style'
 import { AlignCenter, AlignLeft, AlignRight, Bold, Italic, Strikethrough, Underline } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
@@ -14,6 +11,7 @@ import { useEditor } from '@/state/store'
 import type { Clip, RichNode } from '@shared/model'
 import { ColorField, Row, Section, SliderRow } from './fields'
 import { FontPicker } from './FontPicker'
+import { textExtensions } from './text-extensions'
 
 /** Rich text editing with TipTap; preview is scaled so line breaks match the render. */
 export function TextInspector({ clip }: { clip: Clip }) {
@@ -27,8 +25,7 @@ export function TextInspector({ clip }: { clip: Clip }) {
   idRef.current = clip.id
 
   const editor = useTiptap({
-    extensions: [StarterKit.configure({ heading: false, blockquote: false, codeBlock: false, code: false, bulletList: false, orderedList: false, listItem: false, horizontalRule: false, link: false }),
-      TextStyleKit, TextAlign.configure({ types: ['paragraph'], defaultAlignment: 'center' })],
+    extensions: textExtensions(),
     content: text.doc,
     immediatelyRender: true,
     onUpdate: ({ editor }) => {

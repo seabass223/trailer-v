@@ -7,6 +7,7 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { deleteSelection, nextNeighbour, setCrossfade, updateClip } from '@/features/editor/actions'
 import { chooseMediaFolder } from '@/features/library/useLibrary'
+import { formatDb } from '@/lib/utils'
 import { commit, selectedClip, useEditor } from '@/state/store'
 import type { Clip, Project } from '@shared/model'
 import { DEFAULT_XFADE, FPS_OPTIONS } from '@shared/presets'
@@ -16,12 +17,6 @@ import { ColorField, Row, Section, SliderRow } from './fields'
 import { TextInspector } from './TextInspector'
 
 const KIND_ICON = { video: Video, image: ImageIcon, text: Type, audio: AudioLines }
-
-function db(v: number): string {
-  if (v <= 0.0001) return '−∞ dB'
-  const d = 20 * Math.log10(v)
-  return `${d > 0 ? '+' : ''}${d.toFixed(1)} dB`
-}
 
 function ProjectInspector({ project }: { project: Project }) {
   const s = project.settings
@@ -95,7 +90,7 @@ export function ClipInspector({ clip, project }: { clip: Clip; project: Project 
         <Section title="Audio">
           <SliderRow label="Volume" value={clip.volume * 100} min={0} max={200} step={1} format={(v) => `${Math.round(v)}%`}
             onChange={(v) => set('Volume', (c) => { c.volume = v / 100 }, 'vol')} onReset={() => set('Volume', (c) => { c.volume = 1 })} />
-          <Row label=""><span className="text-xs tabular text-muted-foreground">{db(clip.volume)}</span></Row>
+          <Row label=""><span className="text-xs tabular text-muted-foreground">{formatDb(clip.volume)}</span></Row>
         </Section>
       )}
 

@@ -1,10 +1,10 @@
 /**
  * Direct manipulation on the preview: move / scale the selected image, video or text layer.
  * Drags update a transient project sent straight to the engine (live preview); one undo
- * step is committed on release.
+ * step is committed on release. Double-clicking a text layer edits it in place.
  */
 import { produce } from 'immer'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { engine } from '@/engine/client'
 import { textBoxRect } from '@/engine/text/raster'
 import { updateClip } from '@/features/editor/actions'
@@ -12,6 +12,7 @@ import { selectedClip, useEditor } from '@/state/store'
 import { mediaRect, type Rect } from '@shared/geometry'
 import type { Clip, Project, Transform } from '@shared/model'
 import { clipEnd } from '@shared/timeline'
+import { InlineTextEditor } from './InlineTextEditor'
 
 function rectFor(p: Project, c: Clip, t: Transform): Rect | null {
   const { width: W, height: H } = p.settings
@@ -29,8 +30,15 @@ export function TransformOverlay({ width, height }: { width: number; height: num
   const guideX = useRef<HTMLDivElement>(null)
   const guideY = useRef<HTMLDivElement>(null)
   const live = useRef<Transform | null>(null)
+  const [editing, setEditing] = useState<{ id: string; x: number; y: number } | null>(null)
 
   const visual = clip && clip.kind !== 'audio' ? clip : null
+  const inline = visual?.kind === 'text' && editing?.id === visual.id ? editing : null
+
+  // Selecting another clip ends inline editing for good.
+  useEffect(() => {
+    if (editing && editing.id !== visual?.id) setEditing(null)
+  }, [editing, visual?.id])
 
   // Position the box; hide it when the playhead is outside the clip.
   useEffect(() => {
@@ -51,9 +59,12 @@ export function TransformOverlay({ width, height }: { width: number; height: num
       const inside = t >= visual.start && t < clipEnd(visual) && !engine().playing
       el.style.display = inside ? 'block' : 'none'
     })
-  }, [visual, project, width, height])
+  }, [visual, project, width, height, inline])
 
   if (!visual || !project) return null
+  if (inline) {
+    return <InlineTextEditor key={visual.id} clip={visual} project={project} width={width} at={inline} onDone={() => setEditing(null)} />
+  }
   const k = width / project.settings.width
 
   const begin = (e: React.PointerEvent, mode: 'move' | 'scale') => {
@@ -130,11 +141,12 @@ export function TransformOverlay({ width, height }: { width: number; height: num
       <div ref={guideY} className="pointer-events-none absolute inset-x-0 top-1/2 hidden h-px bg-snap/80" />
       <div
         ref={boxRef}
+        data-testid="transform-box"
         className="absolute left-0 top-0 cursor-move outline outline-1 outline-primary"
         onPointerDown={(e) => begin(e, 'move')}
         onDoubleClick={(e) => {
           e.stopPropagation()
-          if (visual.kind === 'text') useEditor.setState({ inspectorOpen: true, editingTextId: visual.id })
+          if (visual.kind === 'text') setEditing({ id: visual.id, x: e.clientX, y: e.clientY })
         }}
       >
         {(['nw', 'ne', 'sw', 'se'] as const).map((c) => (
