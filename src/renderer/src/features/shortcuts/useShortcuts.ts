@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { engine } from '@/engine/client'
 import {
-  deleteSelection, duplicateSelection, goToEnd, goToStart, selectAll, splitAtPlayhead,
+  closeVideoGaps, deleteSelection, duplicateSelection, goToEnd, goToStart, selectAll, splitAtPlayhead, toggleMute,
 } from '@/features/editor/actions'
 import { toggleFullscreen } from '@/features/preview/PreviewPanel'
 import { setZoom, zoomToFit } from '@/features/timeline/view'
@@ -67,6 +67,14 @@ export function useShortcuts(): void {
         case 's':
         case 'S':
           splitAtPlayhead()
+          break
+        case 'm':
+        case 'M':
+          toggleMute()
+          break
+        case 'g':
+        case 'G':
+          closeVideoGaps()
           break
         case 'k':
         case 'K':

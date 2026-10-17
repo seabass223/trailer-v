@@ -1,13 +1,14 @@
-import { AudioLines, Copy, Image as ImageIcon, Scissors, Trash2, Type, Unplug } from 'lucide-react'
-import { memo, useEffect, useRef, useState } from 'react'
+import { AudioLines, Copy, Image as ImageIcon, Scissors, Trash2, Type, Unplug, Volume2, VolumeX } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { filmstrip, pcmFor, posterUrl, type FilmstripView } from '@/engine/media-client'
-import { addCrossfadeAfter, deleteSelection, duplicateSelection, splitAtPlayhead, updateClip } from '@/features/editor/actions'
+import { addCrossfadeAfter, deleteSelection, duplicateSelection, splitAtPlayhead, toggleMute, updateClip } from '@/features/editor/actions'
 import { cn } from '@/lib/utils'
 import { select, useEditor } from '@/state/store'
+import { envelopeAt, gainToDb } from '@shared/envelope'
 import type { Clip, MediaFile } from '@shared/model'
 import { SAMPLE_RATE } from '@shared/mixer'
-import { beginFade, beginMove, beginTrim, beginVolume, volumeY } from './interactions'
+import { beginFade, beginMove, beginTrim, beginVolume, beginVolumeKey, deleteVolumeKey, MAX_VOLUME, volumeY } from './interactions'
 
 const statFor = (files: MediaFile[], path: string | null) => files.find((f) => f.path === path)
 
@@ -68,22 +69,127 @@ function Waveform({ clip, width, height }: { clip: Clip; width: number; height: 
     const ctx = c.getContext('2d')!
     ctx.scale(dpr, dpr)
     ctx.clearRect(0, 0, w, height)
-    ctx.fillStyle = 'rgba(180, 255, 220, 0.55)'
+    ctx.fillStyle = clip.muted ? 'rgba(255, 255, 255, 0.22)' : 'rgba(180, 255, 220, 0.55)'
     const bucketsPerSec = SAMPLE_RATE / (SAMPLE_RATE / 100)
     const startB = (clip.inPoint / 1e6) * bucketsPerSec
     const spanB = (clip.duration / 1e6) * bucketsPerSec
-    const gain = Math.min(2, clip.volume)
+    const env = envelopeOf(clip)
     const mid = height / 2
     for (let x = 0; x < w; x++) {
       const b0 = Math.floor(startB + (x / w) * spanB)
       const b1 = Math.max(b0 + 1, Math.floor(startB + ((x + 1) / w) * spanB))
       let m = 0
       for (let b = b0; b < b1 && b < peaks.length; b++) if (peaks[b] > m) m = peaks[b]
+      const gain = Math.min(2, clip.volume * envelopeAt(env.ts, env.dbs, ((x + 0.5) / w) * clip.duration))
       const a = Math.min(1, (m / 255) * gain) * (mid - 2)
       if (a > 0.3) ctx.fillRect(x, mid - a, 1, a * 2)
     }
-  }, [peaks, width, height, clip.inPoint, clip.duration, clip.volume])
+  }, [peaks, width, height, clip.inPoint, clip.duration, clip.volume, clip.volumeKeys, clip.muted])
   return <canvas ref={ref} className="absolute inset-0 h-full w-full" />
+}
+
+const envelopeOf = (clip: Clip) => ({
+  ts: (clip.volumeKeys ?? []).map((k) => k.t),
+  dbs: (clip.volumeKeys ?? []).map((k) => gainToDb(k.gain)),
+})
+
+/**
+ * The line's points in px: through every point inside the clip, and sampled between points
+ * that differ (gain moves in dB, so on this linear scale the segments curve).
+ */
+function linePoints(clip: Clip, width: number, h: number): string {
+  const { ts, dbs } = envelopeOf(clip)
+  const yAt = (x: number) => volumeY(Math.min(MAX_VOLUME, clip.volume * envelopeAt(ts, dbs, (x / width) * clip.duration)), h)
+  const xs = [0, ...ts.filter((t) => t > 0 && t < clip.duration).map((t) => (t / clip.duration) * width), width]
+  const out: string[] = []
+  for (let i = 0; i < xs.length; i++) {
+    out.push(`${xs[i].toFixed(1)},${yAt(xs[i]).toFixed(1)}`)
+    if (i + 1 === xs.length) break
+    const a = xs[i]
+    const b = xs[i + 1]
+    if (Math.abs(yAt(a) - yAt(b)) < 0.5) continue
+    const n = Math.min(48, Math.floor((b - a) / 6))
+    for (let j = 1; j < n; j++) {
+      const x = a + ((b - a) * j) / n
+      out.push(`${x.toFixed(1)},${yAt(x).toFixed(1)}`)
+    }
+  }
+  return out.join(' ')
+}
+
+/**
+ * Volume line: drag it vertically to set the clip volume (0–200%, double-click resets),
+ * Alt/Ctrl-click to add an envelope point. Points drag freely; double-click deletes one.
+ */
+function VolumeLine({ clip, width, height, edge, selected, clipRef }: {
+  clip: Clip
+  width: number
+  height: number
+  edge: number
+  selected: boolean
+  clipRef: React.RefObject<HTMLDivElement | null>
+}) {
+  const points = useMemo(() => linePoints(clip, width, height), [clip, width, height])
+  const keys = clip.volumeKeys ?? []
+  const quiet = clip.kind === 'video' && clip.volume === 1 && !keys.length && !clip.muted && !selected
+  return (
+    <>
+      {/* Hit area: only the stroke takes the pointer, and it stays clear of the trim edges. */}
+      <svg className="peer/vol pointer-events-none absolute top-0 z-10 overflow-hidden" style={{ left: edge }} width={Math.max(0, width - edge * 2)} height={height}
+        viewBox={`${edge} 0 ${Math.max(0, width - edge * 2)} ${height}`}>
+        <polyline
+          data-testid="volume-line"
+          points={points}
+          fill="none"
+          stroke="transparent"
+          strokeWidth={10}
+          pointerEvents="stroke"
+          className="cursor-ns-resize"
+          onPointerDown={(e) => {
+            if (e.button !== 0) return
+            e.stopPropagation()
+            if (e.altKey || e.ctrlKey) beginVolumeKey(e.nativeEvent, clip, clipRef.current!, null)
+            else beginVolume(e.nativeEvent, clip, clipRef.current!)
+          }}
+          onDoubleClick={(e) => {
+            e.stopPropagation()
+            if (clip.volume !== 1) updateClip(clip.id, `Reset volume ${clip.name}`, (c) => {
+              c.volume = 1
+            })
+          }}
+        />
+      </svg>
+      <svg
+        className={cn(
+          'pointer-events-none absolute inset-0 z-10 text-white/70 drop-shadow-[0_0_1px_rgba(0,0,0,.9)] [stroke-width:1px] peer-hover/vol:text-white peer-hover/vol:[stroke-width:2px]',
+          quiet && 'opacity-0 group-hover/clip:opacity-100',
+        )}
+        width={width}
+        height={height}
+      >
+        <polyline points={points} fill="none" stroke="currentColor" strokeDasharray={clip.muted ? '4 3' : undefined} />
+      </svg>
+      {keys.map((k, i) =>
+        k.t < 0 || k.t > clip.duration ? null : (
+          <div
+            key={i}
+            data-testid="volume-key"
+            className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 cursor-move rounded-full border border-black/60 bg-white shadow before:absolute before:-inset-1.5 before:content-[''] hover:scale-125"
+            style={{ left: (k.t / clip.duration) * width, top: volumeY(Math.min(MAX_VOLUME, clip.volume * k.gain), height) }}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return
+              e.stopPropagation()
+              beginVolumeKey(e.nativeEvent, clip, clipRef.current!, i)
+            }}
+            onDoubleClick={(e) => {
+              e.stopPropagation()
+              deleteVolumeKey(clip, i)
+            }}
+          />
+        ),
+      )}
+    </>
+  )
 }
 
 function Poster({ clip }: { clip: Clip }) {
@@ -162,6 +268,28 @@ export const ClipView = memo(function ClipView({ clip, pps, height, selected, of
             {clip.volume !== 1 && clip.kind !== 'text' && clip.kind !== 'image' && (
               <span className="ml-auto shrink-0 rounded bg-black/40 px-1 text-[10px] tabular">{Math.round(clip.volume * 100)}%</span>
             )}
+            {hasSound && width > 56 && (
+              <button
+                data-testid="clip-mute"
+                aria-label={clip.muted ? 'Unmute clip' : 'Mute clip'}
+                aria-pressed={!!clip.muted}
+                title={clip.muted ? 'Unmute clip (M)' : 'Mute clip (M)'}
+                className={cn(
+                  'pointer-events-auto relative z-30 -my-1 -mr-1 shrink-0 rounded p-0.5 hover:bg-black/50',
+                  clip.volume === 1 && 'ml-auto',
+                  clip.muted ? 'text-amber-300' : 'opacity-0 group-hover/clip:opacity-100',
+                  selected && 'opacity-100',
+                )}
+                onPointerDown={(e) => e.stopPropagation()}
+                onDoubleClick={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleMute([clip.id])
+                }}
+              >
+                {clip.muted ? <VolumeX className="size-3.5" /> : <Volume2 className="size-3.5" />}
+              </button>
+            )}
           </div>
 
           {/* Fade ramps */}
@@ -200,32 +328,8 @@ export const ClipView = memo(function ClipView({ clip, pps, height, selected, of
               />
             </>
           )}
-          {/* Volume line: drag vertically (0–200%), double-click resets to 100% */}
           {hasSound && !offline && width > 24 && (
-            <div
-              data-testid="volume-line"
-              className="group/vol absolute z-10 h-2.5 -translate-y-1/2 cursor-ns-resize"
-              style={{ top: volumeY(clip.volume, height - 8), left: edge, right: edge }}
-              onPointerDown={(e) => {
-                if (e.button !== 0) return
-                e.stopPropagation()
-                beginVolume(e.nativeEvent, clip, ref.current!)
-              }}
-              onDoubleClick={(e) => {
-                e.stopPropagation()
-                if (clip.volume !== 1) updateClip(clip.id, `Reset volume ${clip.name}`, (c) => {
-                  c.volume = 1
-                })
-              }}
-            >
-              <div
-                className={cn(
-                  'pointer-events-none absolute top-1/2 h-px -translate-y-1/2 bg-white/70 shadow-[0_0_2px_rgba(0,0,0,.9)] group-hover/vol:h-0.5 group-hover/vol:bg-white',
-                  clip.kind === 'video' && clip.volume === 1 && !selected && 'opacity-0 group-hover/clip:opacity-100',
-                )}
-                style={{ left: -edge, right: -edge }}
-              />
-            </div>
+            <VolumeLine clip={clip} width={width} height={height - 8} edge={edge} selected={selected} clipRef={ref} />
           )}
           {/* Trim grips */}
           <div className="absolute inset-y-0 left-0 w-1.5 cursor-ew-resize bg-white/0 group-hover/clip:bg-white/50" />
@@ -236,6 +340,16 @@ export const ClipView = memo(function ClipView({ clip, pps, height, selected, of
         <ContextMenuItem onSelect={splitAtPlayhead}><Scissors /> Split at playhead <ContextMenuShortcut>S</ContextMenuShortcut></ContextMenuItem>
         <ContextMenuItem onSelect={duplicateSelection}><Copy /> Duplicate <ContextMenuShortcut>Ctrl+D</ContextMenuShortcut></ContextMenuItem>
         {clip.kind !== 'audio' && <ContextMenuItem onSelect={() => addCrossfadeAfter(clip.id)}>Cross-fade into next</ContextMenuItem>}
+        {hasSound && (
+          <ContextMenuItem onSelect={() => toggleMute(selected ? undefined : [clip.id])}>
+            {clip.muted ? <Volume2 /> : <VolumeX />} {clip.muted ? 'Unmute' : 'Mute'} clip audio <ContextMenuShortcut>M</ContextMenuShortcut>
+          </ContextMenuItem>
+        )}
+        {hasSound && !!clip.volumeKeys?.length && (
+          <ContextMenuItem onSelect={() => updateClip(clip.id, `Clear volume points ${clip.name}`, (c) => {
+            delete c.volumeKeys
+          })}>Clear volume points</ContextMenuItem>
+        )}
         <ContextMenuSeparator />
         <ContextMenuItem variant="destructive" onSelect={deleteSelection}><Trash2 /> Delete <ContextMenuShortcut>Del</ContextMenuShortcut></ContextMenuItem>
       </ContextMenuContent>

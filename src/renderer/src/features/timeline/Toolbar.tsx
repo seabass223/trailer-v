@@ -1,14 +1,14 @@
-import { ChevronDown, Copy, Magnet, Redo2, Scissors, Trash2, Undo2, ZoomIn, ZoomOut } from 'lucide-react'
+import { ChevronDown, Copy, FoldHorizontal, Magnet, Redo2, Scissors, Trash2, Undo2, ZoomIn, ZoomOut } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { deleteSelection, duplicateSelection, splitAtPlayhead } from '@/features/editor/actions'
+import { closeVideoGaps, deleteSelection, duplicateSelection, splitAtPlayhead } from '@/features/editor/actions'
 import { cn } from '@/lib/utils'
 import { jumpTo, redo, undo, useEditor } from '@/state/store'
-import { projectDuration } from '@shared/timeline'
+import { projectDuration, tracksWithGaps } from '@shared/timeline'
 import { MAX_PPS, MIN_PPS, setZoom, zoomToFit } from './view'
 
 function Tool({ label, keys, onClick, disabled, children, active }: { label: string; keys?: string; onClick: () => void; disabled?: boolean; children: ReactNode; active?: boolean }) {
@@ -38,6 +38,7 @@ export function Toolbar() {
   const snapping = useEditor((s) => s.snapping)
   const pxPerSec = useEditor((s) => s.pxPerSec)
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0))
+  const videoGaps = useEditor((s) => (s.project ? tracksWithGaps(s.project).length > 0 : false))
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-1 px-3">
@@ -79,6 +80,10 @@ export function Toolbar() {
       <Tool label="Split" keys="S" onClick={splitAtPlayhead}><Scissors className="size-5" /></Tool>
       <Tool label="Duplicate" keys="Ctrl+D" onClick={duplicateSelection} disabled={!single}><Copy className="size-[18px]" /></Tool>
       <Tool label="Delete" keys="Del" onClick={deleteSelection} disabled={!hasSel}><Trash2 className="size-5" /></Tool>
+      <Tool label={videoGaps ? 'Close gaps between video clips' : 'No gaps between video clips'} keys="G"
+        onClick={() => closeVideoGaps()} disabled={!videoGaps}>
+        <FoldHorizontal className="size-5" />
+      </Tool>
 
       <div className="ml-auto flex items-center gap-1">
         <Tool label={snapping ? 'Snapping on' : 'Snapping off'} keys="(hold Alt to bypass)" onClick={() => useEditor.setState({ snapping: !snapping })} active={snapping}>

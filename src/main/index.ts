@@ -25,6 +25,8 @@ app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer')
 if (process.env.TRAILER_DATA_DIR) app.setPath('userData', join(process.env.TRAILER_DATA_DIR, 'userData'))
 
 registerSchemes()
+// Must match build.appId so Start menu / taskbar pins group with the running window and show its icon.
+app.setAppUserModelId('dev.trailerv.editor')
 
 const dirname = import.meta.dirname
 let win: BrowserWindow | null = null
@@ -38,6 +40,8 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#0f1115',
     title: 'Trailer-V',
+    // Packaged builds take the icon from the .exe; dev runs need it passed explicitly.
+    ...(app.isPackaged ? {} : { icon: join(dirname, '../../build/icon.ico') }),
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0f1115', symbolColor: '#c3c8d1', height: 52 },
     webPreferences: {

@@ -23,11 +23,33 @@ export interface Track {
   name: string
   /** Visual tracks: hidden. Audio tracks: muted. */
   hidden: boolean
+  /** Audio tracks: dip under the sound of video-track clips. */
+  duck?: DuckSettings
+}
+
+export interface DuckSettings {
+  enabled: boolean
+  /** How far the track dips, in dB (positive). */
+  amount: number
+  /** Ramp down before the clip audio starts, in ms. */
+  attack: number
+  /** Ramp back up after it ends, in ms. */
+  release: number
+}
+
+/** A point on a clip's volume envelope. Gain is linear and multiplied by the clip volume. */
+export interface VolumeKey {
+  /** Relative to the clip start. May lie outside the clip after a trim, so trimming back restores it. */
+  t: Micros
+  gain: number
 }
 
 export interface Fade {
   duration: Micros
-  /** Colour faded to/from on the main video track. Overlays fade to transparent. */
+  /**
+   * Colour faded to/from on video tracks; an upper video track dissolves into the video below
+   * instead, where there is one. Overlays fade to transparent.
+   */
   color: string
 }
 
@@ -84,6 +106,10 @@ export interface Clip {
   sourceDuration: Micros | null
   /** Linear gain, 1 = 100%. */
   volume: number
+  /** Silent in preview and export; `volume` is kept so un-muting restores it. */
+  muted?: boolean
+  /** Volume envelope, sorted by `t`; interpolated linearly in dB. */
+  volumeKeys?: VolumeKey[]
   fadeIn: Fade
   fadeOut: Fade
   transform: Transform

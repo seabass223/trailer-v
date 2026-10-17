@@ -2,6 +2,7 @@
  * Sample-accurate mixer shared by the AudioWorklet (preview) and export, so what you hear
  * is exactly what gets encoded. Sources are 48 kHz interleaved stereo Int16 PCM.
  */
+import { dbToGain, duckDepth, envelopeAt, type DuckWindow } from './envelope'
 import type { AudioSegment } from './render-plan'
 
 export const SAMPLE_RATE = 48_000
@@ -25,6 +26,11 @@ export interface CompiledSegment {
   xInTo: number
   xOutFrom: number
   xOutTo: number
+  /** Volume envelope (timeline frames, dB). */
+  keyTimes: number[]
+  keyDbs: number[]
+  duckDb: number
+  duck: DuckWindow[]
 }
 
 const f = (us: number) => Math.round((us * SAMPLE_RATE) / 1_000_000)
@@ -44,14 +50,25 @@ export function compileSegments(segs: AudioSegment[]): CompiledSegment[] {
     xInTo: f(s.xInTo),
     xOutFrom: f(s.xOutFrom),
     xOutTo: f(s.xOutTo),
+    keyTimes: s.keyTimes.map(f),
+    keyDbs: s.keyDbs,
+    duckDb: s.duckDb,
+    duck: s.duck.map((w) => ({ rampFrom: f(w.rampFrom), downAt: f(w.downAt), upAt: f(w.upAt), rampTo: f(w.rampTo) })),
   }))
 }
 
 const HALF_PI = Math.PI / 2
+const GAIN_STEP = 32
 const I16 = 1 / 32768
 
-function gainAt(s: CompiledSegment, t: number): number {
+/** A segment's gain at timeline frame `t`: volume × envelope × ducking × fades × cross-fades. */
+export function gainAt(s: CompiledSegment, t: number): number {
   let g = s.gain
+  if (s.keyTimes.length) g *= envelopeAt(s.keyTimes, s.keyDbs, t)
+  if (s.duck.length) {
+    const d = duckDepth(s.duck, t)
+    if (d > 0) g *= dbToGain(-s.duckDb * d)
+  }
   if (t < s.fadeInEnd && s.fadeInEnd > s.clipStart) g *= Math.max(0, (t - s.clipStart) / (s.fadeInEnd - s.clipStart))
   if (t > s.fadeOutStart && s.clipEnd > s.fadeOutStart) g *= Math.max(0, (s.clipEnd - t) / (s.clipEnd - s.fadeOutStart))
   if (s.xInTo > s.xInFrom && t < s.xInTo) g *= Math.sin(Math.max(0, (t - s.xInFrom) / (s.xInTo - s.xInFrom)) * HALF_PI)
@@ -82,10 +99,17 @@ export function mix(
     const b = Math.min(end, s.to)
     const data = src.data
     const offset = s.inPoint - s.clipStart
-    // Envelope is piecewise-smooth; evaluating it every 32 frames is inaudible and much cheaper.
-    let g = gainAt(s, a)
+    // Gain is piecewise-smooth; evaluating it every 32 frames is inaudible and much cheaper.
+    // The points are absolute (every 32nd timeline frame, and the segment start), so preview's
+    // 128-frame quanta from any seek position and export's 1 s blocks give identical samples.
+    const floor = a - (a % GAIN_STEP)
+    let g = gainAt(s, Math.max(s.from, floor))
+    let next = floor + GAIN_STEP
     for (let t = a; t < b; t++) {
-      if (((t - a) & 31) === 0) g = gainAt(s, t)
+      if (t === next) {
+        g = gainAt(s, t)
+        next += GAIN_STEP
+      }
       const sf = t + offset
       if (sf < 0 || sf >= src.frames) continue
       const i = t - start

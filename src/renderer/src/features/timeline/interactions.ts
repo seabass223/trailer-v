@@ -5,15 +5,16 @@
  * exactly one undo step.
  */
 import { engine } from '@/engine/client'
-import { moveClipTo, trim, updateClip } from '@/features/editor/actions'
+import { moveClipTo, reorderTrack, trim, updateClip } from '@/features/editor/actions'
 import { formatDb } from '@/lib/utils'
 import { clearDraft, commit, select, setDraft, toggleSelect, useEditor } from '@/state/store'
 import { trackAccepts } from '@shared/factory'
+import { keyGainAt } from '@shared/envelope'
 import type { Clip, Micros, Project } from '@shared/model'
 import {
-  clipEnd, isMain, mainBoundaryTime, mainInsertIndex, nearestFreeStart, trimPreview,
+  applyTrim, clipEnd, isMain, mainBoundaryTime, mainInsertIndex, nearestFreeStart, trackMoveRange, trimPreview,
 } from '@shared/timeline'
-import { autoScroll, HEADER_W, pxToUs, rowTop, timeAtClientX, trackAtClientY, usToPx, view, ROW_H } from './view'
+import { autoScroll, headerW, pxToUs, RULER_H, setHeaderW, rowTop, timeAtClientX, trackAtClientY, usToPx, view, ROW_H } from './view'
 
 const SNAP_PX = 8
 
@@ -57,7 +58,7 @@ export function showSnapLine(el: HTMLDivElement, at: Micros | null): void {
     return
   }
   el.style.display = 'block'
-  el.style.transform = `translateX(${HEADER_W + usToPx(at)}px)`
+  el.style.transform = `translateX(${headerW() + usToPx(at)}px)`
 }
 
 export const newSnapLine = () => overlayEl('pointer-events-none absolute top-0 bottom-0 left-0 z-40 hidden w-px bg-snap shadow-[0_0_6px_var(--snap)]')
@@ -103,15 +104,15 @@ export function beginMove(e: PointerEvent, clip: Clip, clipEl: HTMLElement): voi
       const idx = mainInsertIndex(p, pointerT, exclude)
       const at = mainBoundaryTime(p, idx, exclude)
       marker!.style.display = 'block'
-      marker!.style.transform = `translate(${HEADER_W + usToPx(at) - 2}px, ${top}px)`
+      marker!.style.transform = `translate(${headerW() + usToPx(at) - 2}px, ${top}px)`
       marker!.style.height = `${h}px`
-      ghost!.style.transform = `translate(${HEADER_W + usToPx(desired)}px, ${top + 4}px)`
+      ghost!.style.transform = `translate(${headerW() + usToPx(desired)}px, ${top + 4}px)`
       result = { trackId, at: pointerT }
       showSnapLine(snapLine!, null)
     } else {
       marker!.style.display = 'none'
       const at = nearestFreeStart(p, trackId, desired, clip.duration, exclude)
-      ghost!.style.transform = `translate(${HEADER_W + usToPx(at)}px, ${top + 4}px)`
+      ghost!.style.transform = `translate(${headerW() + usToPx(at)}px, ${top + 4}px)`
       result = { trackId, at }
       showSnapLine(snapLine!, at === desired ? snapAt : null)
     }
@@ -191,7 +192,7 @@ export function beginTrim(e: PointerEvent, clip: Clip, edge: 'start' | 'end'): v
     if (!r) return
     setDraft((dr) => {
       const c = dr.clips.find((x) => x.id === clip.id)!
-      Object.assign(c, r)
+      applyTrim(c, r)
       // Ripple the magnetic track live.
       if (isMain(dr, c.trackId)) {
         let t = 0
@@ -282,23 +283,42 @@ export function beginFade(e: PointerEvent, clip: Clip, which: 'fadeIn' | 'fadeOu
 // --- Volume line ------------------------------------------------------------
 
 export const MAX_VOLUME = 2
+/** Envelope points may boost a quiet clip up to +12 dB over its volume. */
+export const MAX_KEY_GAIN = 4
 const VOLUME_PAD = 4
 const UNITY_SNAP_PX = 4
 
 /** Line position (px from the clip top) for a gain: 0% at the bottom, 100% mid, 200% top. */
 export const volumeY = (v: number, clipH: number): number => VOLUME_PAD + (1 - v / MAX_VOLUME) * (clipH - VOLUME_PAD * 2)
 
+/** Level the line shows at clip-relative `t`: volume × envelope, within the line's range. */
+export const lineLevel = (clip: Pick<Clip, 'volume' | 'volumeKeys'>, t: Micros): number =>
+  Math.min(MAX_VOLUME, clip.volume * keyGainAt(clip.volumeKeys, t))
+
+/** Floating "−6.0 dB 50%" readout next to the pointer. */
+function volumeTip(): { el: HTMLDivElement; show: (clientX: number, clientY: number, level: number) => void } {
+  const el = overlayEl('pointer-events-none absolute left-0 top-0 z-50 flex gap-1.5 rounded bg-popover px-1.5 py-0.5 text-[11px] tabular text-popover-foreground shadow')
+  el.dataset.testid = 'volume-tip'
+  const dbEl = document.createElement('span')
+  const pctEl = document.createElement('span')
+  pctEl.className = 'text-muted-foreground'
+  el.append(dbEl, pctEl)
+  const show = (clientX: number, clientY: number, level: number) => {
+    const sc = view.scroller!
+    const rect = sc.getBoundingClientRect()
+    el.style.transform = `translate(${clientX - rect.left + sc.scrollLeft + 14}px, ${clientY - rect.top + sc.scrollTop - 11}px)`
+    dbEl.textContent = formatDb(level)
+    pctEl.textContent = `${Math.round(level * 100)}%`
+  }
+  return { el, show }
+}
+
 /** Drag the volume line vertically. Shift = fine, Alt = no snap to 100%. */
 export function beginVolume(e: PointerEvent, clip: Clip, clipEl: HTMLElement): void {
   const h = clipEl.offsetHeight
   const perPx = MAX_VOLUME / Math.max(1, h - VOLUME_PAD * 2)
   const initial = clip.volume
-  const tip = overlayEl('pointer-events-none absolute left-0 top-0 z-50 flex gap-1.5 rounded bg-popover px-1.5 py-0.5 text-[11px] tabular text-popover-foreground shadow')
-  tip.dataset.testid = 'volume-tip'
-  const dbEl = document.createElement('span')
-  const pctEl = document.createElement('span')
-  pctEl.className = 'text-muted-foreground'
-  tip.append(dbEl, pctEl)
+  const tip = volumeTip()
   let raw = initial
   let value = initial
   let lastY = e.clientY
@@ -308,12 +328,10 @@ export function beginVolume(e: PointerEvent, clip: Clip, clipEl: HTMLElement): v
   document.body.style.cursor = 'ns-resize'
 
   const show = () => {
-    const sc = view.scroller!
-    const rect = sc.getBoundingClientRect()
-    const y = clipEl.getBoundingClientRect().top + volumeY(value, h)
-    tip.style.transform = `translate(${lastX - rect.left + sc.scrollLeft + 14}px, ${y - rect.top + sc.scrollTop - 11}px)`
-    dbEl.textContent = formatDb(value)
-    pctEl.textContent = `${Math.round(value * 100)}%`
+    // With an envelope the line sits at volume × envelope under the pointer.
+    const r = clipEl.getBoundingClientRect()
+    const level = Math.min(MAX_VOLUME, value * keyGainAt(clip.volumeKeys, pxToUs(lastX - r.left)))
+    tip.show(lastX, r.top + volumeY(level, h), value)
   }
   show()
 
@@ -338,7 +356,7 @@ export function beginVolume(e: PointerEvent, clip: Clip, clipEl: HTMLElement): v
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
     cancelAnimationFrame(raf)
-    tip.remove()
+    tip.el.remove()
     document.body.style.cursor = ''
     // Commit before dropping the draft so playback never hears the old gain in between.
     if (value !== initial) updateClip(clip.id, `Volume ${clip.name}`, (c) => {
@@ -348,6 +366,94 @@ export function beginVolume(e: PointerEvent, clip: Clip, clipEl: HTMLElement): v
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)
+}
+
+/**
+ * Drag a volume envelope point: sideways in time (between its neighbours, inside the clip),
+ * up/down in level. With `index` null it first adds a point on the line under the pointer
+ * (Alt/Ctrl-click), so adding and dragging is one undo step. Shift = fine, Alt = no snap to
+ * the clip's volume.
+ */
+export function beginVolumeKey(e: PointerEvent, clip: Clip, clipEl: HTMLElement, index: number | null): void {
+  const h = clipEl.offsetHeight
+  const perPx = MAX_VOLUME / Math.max(1, h - VOLUME_PAD * 2)
+  const keys = (clip.volumeKeys ?? []).map((k) => ({ ...k }))
+  const added = index == null
+  let i = index ?? 0
+  if (index == null) {
+    const t = Math.max(0, Math.min(clip.duration, pxToUs(e.clientX - clipEl.getBoundingClientRect().left)))
+    i = keys.findIndex((k) => k.t > t)
+    if (i < 0) i = keys.length
+    keys.splice(i, 0, { t, gain: keyGainAt(clip.volumeKeys, t) })
+  }
+  const key = keys[i]
+  const t0 = key.t
+  const g0 = key.gain
+  // Levels are edited on the line's scale (volume × gain); on a silent clip, the gain itself.
+  const vol = clip.volume > 0 ? clip.volume : 1
+  const lo = Math.max(0, keys[i - 1]?.t ?? 0)
+  const hi = Math.min(clip.duration, keys[i + 1]?.t ?? clip.duration)
+  const tip = volumeTip()
+  let raw = Math.min(MAX_VOLUME, vol * g0)
+  let lastY = e.clientY
+  let moved = false
+  let raf = 0
+  select([clip.id])
+
+  const draft = () =>
+    setDraft((d) => {
+      const c = d.clips.find((x) => x.id === clip.id)
+      if (c) c.volumeKeys = keys.map((k) => ({ ...k }))
+    })
+  const show = (clientX: number) =>
+    tip.show(clientX, clipEl.getBoundingClientRect().top + volumeY(Math.min(MAX_VOLUME, vol * key.gain), h), clip.volume * key.gain)
+  if (added) draft()
+  show(e.clientX)
+
+  const move = (ev: PointerEvent) => {
+    // A dead zone, so clicks (and double-click to delete) never nudge the point.
+    if (!moved && Math.hypot(ev.clientX - e.clientX, ev.clientY - e.clientY) < 3) return
+    if (!moved) document.body.style.cursor = 'move'
+    moved = true
+    raw = Math.max(0, Math.min(MAX_VOLUME, raw - (ev.clientY - lastY) * perPx * (ev.shiftKey ? 0.1 : 1)))
+    lastY = ev.clientY
+    const unity = !ev.altKey && !ev.shiftKey && Math.abs(raw - vol) < UNITY_SNAP_PX * perPx
+    const gain = unity ? 1 : Math.min(MAX_KEY_GAIN, raw / vol)
+    key.gain = ev.shiftKey ? Math.round(gain * 1000) / 1000 : Math.round(gain * 100) / 100
+    // Shift locks time for fine level changes.
+    key.t = ev.shiftKey ? key.t : Math.max(lo, Math.min(hi, t0 + pxToUs(ev.clientX - e.clientX)))
+    const x = ev.clientX
+    if (!raf) {
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        draft()
+        show(x)
+      })
+    }
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    cancelAnimationFrame(raf)
+    tip.el.remove()
+    document.body.style.cursor = ''
+    if (added || key.t !== t0 || key.gain !== g0) {
+      updateClip(clip.id, `${added ? 'Add' : 'Move'} volume point ${clip.name}`, (c) => {
+        c.volumeKeys = keys
+      })
+    }
+    clearDraft()
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+export function deleteVolumeKey(clip: Clip, index: number): void {
+  if (!clip.volumeKeys?.[index]) return
+  updateClip(clip.id, `Delete volume point ${clip.name}`, (c) => {
+    c.volumeKeys = c.volumeKeys?.filter((_, j) => j !== index)
+    if (!c.volumeKeys?.length) delete c.volumeKeys
+  })
 }
 
 // --- Empty-area: click to seek, drag to marquee-select ----------------------
@@ -379,8 +485,8 @@ export function beginMarquee(e: PointerEvent): void {
     box.style.transform = `translate(${x0}px, ${y0}px)`
     box.style.width = `${x1 - x0}px`
     box.style.height = `${y1 - y0}px`
-    const t0 = pxToUs(x0 - HEADER_W)
-    const t1 = pxToUs(x1 - HEADER_W)
+    const t0 = pxToUs(x0 - headerW())
+    const t1 = pxToUs(x1 - headerW())
     const hits = p.clips.filter((c) => {
       const top = rowTop(p, c.trackId)
       const h = ROW_H[p.tracks.find((t) => t.id === c.trackId)?.kind ?? 'video']
@@ -418,6 +524,70 @@ export function beginScrub(e: PointerEvent): void {
     window.removeEventListener('pointermove', move)
     window.removeEventListener('pointerup', up)
     stopScroll()
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+// --- Track reordering -------------------------------------------------------
+
+/** Drag a track row (header + lane) up/down; a line marks where it lands. One undo step. */
+export function beginTrackDrag(e: PointerEvent, trackId: string): void {
+  const p = useEditor.getState().project
+  const sc = view.scroller
+  const row = sc?.querySelector<HTMLElement>(`[data-row="${trackId}"]`)
+  const range = p && trackMoveRange(p, trackId)
+  if (!p || !sc || !row || !range) return
+  const from = p.tracks.findIndex((t) => t.id === trackId)
+  // Row tops in lane coordinates (below the ruler), plus the bottom edge.
+  const tops = [0]
+  for (const t of p.tracks) tops.push(tops[tops.length - 1] + ROW_H[t.kind])
+  const startY = e.clientY
+  const startScroll = sc.scrollTop
+  let line: HTMLDivElement | null = null
+  let to = from
+
+  const move = (ev: PointerEvent) => {
+    const dy = ev.clientY - startY + sc.scrollTop - startScroll
+    if (!line) {
+      if (Math.abs(dy) < 4) return
+      line = overlayEl('pointer-events-none absolute left-0 right-0 top-0 z-50 h-0.5 rounded bg-primary shadow-[0_0_8px_var(--primary)]')
+      row.classList.add('relative', 'z-50', 'opacity-80', 'shadow-lg', 'pointer-events-none')
+      document.body.style.cursor = 'grabbing'
+    }
+    row.style.transform = `translateY(${dy}px)`
+    const y = ev.clientY - sc.getBoundingClientRect().top + sc.scrollTop - RULER_H
+    let slot = 0
+    for (let i = 0; i < p.tracks.length; i++) if (y > (tops[i] + tops[i + 1]) / 2) slot = i + 1
+    to = Math.max(range[0], Math.min(range[1], slot > from ? slot - 1 : slot))
+    line.style.display = to === from ? 'none' : 'block'
+    line.style.transform = `translateY(${RULER_H + tops[to > from ? to + 1 : to] - 1}px)`
+  }
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    if (!line) return
+    line.remove()
+    row.classList.remove('relative', 'z-50', 'opacity-80', 'shadow-lg', 'pointer-events-none')
+    row.style.transform = ''
+    document.body.style.cursor = ''
+    if (to !== from) reorderTrack(trackId, to)
+  }
+  window.addEventListener('pointermove', move)
+  window.addEventListener('pointerup', up)
+}
+
+// --- Track-name column width ------------------------------------------------
+
+export function beginHeaderResize(e: PointerEvent): void {
+  const startX = e.clientX
+  const startW = headerW()
+  document.body.style.cursor = 'col-resize'
+  const move = (ev: PointerEvent) => setHeaderW(startW + ev.clientX - startX)
+  const up = () => {
+    window.removeEventListener('pointermove', move)
+    window.removeEventListener('pointerup', up)
+    document.body.style.cursor = ''
   }
   window.addEventListener('pointermove', move)
   window.addEventListener('pointerup', up)

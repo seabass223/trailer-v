@@ -14,20 +14,24 @@
     "test": "vitest run",
     "test:e2e": "electron-vite build && playwright test",
     "fixtures": "bash scripts/make-fixtures.sh",
+    "icon": "electron scripts/make-icon.mjs",
     "dist": "electron-vite build && electron-builder --win nsis",
     "dist:dir": "electron-vite build && electron-builder --win dir"
   },
   "build": {
     "appId": "dev.trailerv.editor",
     "productName": "Trailer-V",
-    "directories": { "output": "dist" },
+    "directories": { "output": "dist", "buildResources": "build" },
     "files": ["out/**", "package.json"],
     "asar": true,
-    "win": { "target": ["nsis"] },
+    "win": { "target": ["nsis"], "icon": "build/icon.ico" },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
       "shortcutName": "Trailer-V"
     }
   },

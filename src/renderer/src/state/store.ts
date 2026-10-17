@@ -32,6 +32,8 @@ export interface EditorState {
   libraryTab: LibraryTab
   libraryLoading: boolean
   pxPerSec: number
+  /** Width of the timeline's track-name column (px). */
+  headerW: number
   inspectorOpen: boolean
   snapping: boolean
   quality: PreviewQuality
@@ -41,6 +43,17 @@ export interface EditorState {
   exportOpen: boolean
   shortcutsOpen: boolean
   editingTextId: string | null
+}
+
+export const HEADER_W_DEFAULT = 168
+
+function storedHeaderW(): number {
+  try {
+    const v = Number(localStorage.getItem('timeline.headerW'))
+    return v > 0 ? Math.min(420, Math.max(120, v)) : HEADER_W_DEFAULT
+  } catch {
+    return HEADER_W_DEFAULT
+  }
 }
 
 export const useEditor = create<EditorState>(() => ({
@@ -54,6 +67,7 @@ export const useEditor = create<EditorState>(() => ({
   libraryTab: 'media',
   libraryLoading: false,
   pxPerSec: 60,
+  headerW: storedHeaderW(),
   inspectorOpen: true,
   snapping: true,
   quality: 'auto',

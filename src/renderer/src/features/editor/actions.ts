@@ -3,12 +3,13 @@ import { toast } from 'sonner'
 import { engine } from '@/engine/client'
 import { probeMedia } from '@/engine/media-client'
 import { commit, select, useEditor } from '@/state/store'
-import { baseClip, newTrack, textDoc, TEXT_PRESETS, trackAccepts, type TextPreset } from '@shared/factory'
-import type { AspectId, Clip, FitMode, MediaFile, Micros, Project, TierId, TrackKind } from '@shared/model'
+import { baseClip, textDoc, TEXT_PRESETS, trackAccepts, type TextPreset } from '@shared/factory'
+import { DEFAULT_DUCK } from '@shared/envelope'
+import type { AspectId, Clip, DuckSettings, FitMode, MediaFile, Micros, Project, TierId, TrackKind } from '@shared/model'
 import { DEFAULT_IMAGE_DURATION, DEFAULT_XFADE } from '@shared/presets'
 import {
-  addClip, adjacentPairs, applyFormat, deleteClips, duplicateClip, findClip, mainTrack, moveClip, projectDuration,
-  setTransition, splitAt, trimClip,
+  addClip, adjacentPairs, applyFormat, closeGaps, deleteClips, duplicateClip, findClip, insertTrack, isMain, mainTrack, moveClip,
+  moveTrack, projectDuration, setTransition, splitAt, trimClip,
 } from '@shared/timeline'
 
 const project = () => useEditor.getState().project
@@ -121,6 +122,43 @@ export function updateClip(id: string, label: string, recipe: (c: Clip) => void,
   }, { coalesceKey: coalesceKey ? `${coalesceKey}:${id}` : undefined })
 }
 
+export const clipHasSound = (c: Clip): boolean => !!c.source && (c.kind === 'audio' || (c.kind === 'video' && c.hasAudio))
+
+/**
+ * Mute or un-mute clips' own sound (volume is kept). Mixed selections all go muted first.
+ * Defaults to the selected clips that have sound.
+ */
+export function toggleMute(ids?: readonly string[]): void {
+  const p = project()
+  if (!p) return
+  const targets = p.clips.filter((c) => (ids ?? useEditor.getState().selection).includes(c.id) && clipHasSound(c))
+  if (!targets.length) {
+    if (!ids) toast('Select a clip with sound to mute it', { duration: 1500 })
+    return
+  }
+  const mute = targets.some((c) => !c.muted)
+  const name = targets.length === 1 ? ` ${targets[0].name}` : ` ${targets.length} clips`
+  const set = new Set(targets.map((c) => c.id))
+  commit(`${mute ? 'Mute' : 'Unmute'}${name}`, (d) => {
+    for (const c of d.clips) {
+      if (!set.has(c.id)) continue
+      if (mute) c.muted = true
+      else delete c.muted
+    }
+  })
+}
+
+/** Change an audio track's ducking; the first change enables it with the defaults. */
+export function setDuck(trackId: string, patch: Partial<DuckSettings>, coalesceKey?: string): void {
+  const t = project()?.tracks.find((x) => x.id === trackId)
+  if (!t) return
+  const label = patch.enabled === undefined ? 'Ducking' : patch.enabled ? `Duck ${t.name}` : `Stop ducking ${t.name}`
+  commit(label, (d) => {
+    const x = d.tracks.find((y) => y.id === trackId)
+    if (x) x.duck = { ...DEFAULT_DUCK, ...x.duck, ...patch }
+  }, { coalesceKey: coalesceKey ? `${coalesceKey}:${trackId}` : undefined })
+}
+
 export function setCrossfade(fromId: string, toId: string, duration: Micros | null): void {
   commit(duration ? 'Add cross-fade' : 'Remove transition', (d) => setTransition(d, fromId, toId, duration), {
     coalesceKey: duration ? `xfade:${fromId}` : undefined,
@@ -152,14 +190,27 @@ export function toggleTrack(trackId: string): void {
   })
 }
 
-export function addTrack(kind: Exclude<TrackKind, 'video'>): void {
+export function renameTrack(trackId: string, name: string): void {
+  const t = project()?.tracks.find((x) => x.id === trackId)
+  const next = name.trim()
+  if (!t || !next || next === t.name) return
+  commit(`Rename ${t.name}`, (d) => {
+    const x = d.tracks.find((y) => y.id === trackId)
+    if (x) x.name = next
+  })
+}
+
+export function reorderTrack(trackId: string, to: number): void {
+  const t = project()?.tracks.find((x) => x.id === trackId)
+  if (!t) return
+  commit(`Move ${t.name}`, (d) => {
+    moveTrack(d, trackId, to)
+  })
+}
+
+export function addTrack(kind: TrackKind): void {
   commit(`Add ${kind} track`, (d) => {
-    const count = d.tracks.filter((t) => t.kind === kind).length
-    const t = newTrack(kind, `${kind[0].toUpperCase()}${kind.slice(1)} ${count + 1}`)
-    // Insert after the last track of the same kind.
-    let idx = -1
-    d.tracks.forEach((x, i) => x.kind === kind && (idx = i))
-    d.tracks.splice(idx + 1, 0, t)
+    insertTrack(d, kind)
   })
 }
 
@@ -167,7 +218,7 @@ export function removeTrack(trackId: string): void {
   const p = project()
   if (!p) return
   const t = p.tracks.find((x) => x.id === trackId)
-  if (!t || t.kind === 'video') return
+  if (!t || isMain(p, trackId)) return
   if (p.clips.some((c) => c.trackId === trackId)) {
     toast('Only empty tracks can be removed', { duration: 1500 })
     return
@@ -175,6 +226,16 @@ export function removeTrack(trackId: string): void {
   commit(`Remove ${t.name}`, (d) => {
     d.tracks = d.tracks.filter((x) => x.id !== trackId)
   })
+}
+
+/** Butt video clips together (all video tracks, or one), keeping transitions; one undo step. */
+export function closeVideoGaps(trackId?: string): void {
+  let closed = 0
+  commit(trackId ? 'Close gaps on track' : 'Close gaps', (d) => {
+    closed = closeGaps(d, 'video', trackId ? [trackId] : undefined)
+  })
+  if (closed) toast.success(`Closed ${closed} gap${closed === 1 ? '' : 's'}`, { duration: 1500 })
+  else toast('No gaps between video clips', { duration: 1500 })
 }
 
 export function changeFormat(aspect: AspectId, tier: TierId, fit: FitMode | null): void {

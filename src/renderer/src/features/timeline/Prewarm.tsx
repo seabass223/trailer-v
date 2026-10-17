@@ -6,6 +6,7 @@ import { ColorField } from '@/features/inspector/fields'
 import { ClipInspector } from '@/features/inspector/InspectorPanel'
 import { useEditor } from '@/state/store'
 import { baseClip } from '@shared/factory'
+import { mainTrack } from '@shared/timeline'
 
 /**
  * The first time Chromium's GPU process draws a new kind of effect it compiles shaders: a
@@ -18,7 +19,7 @@ export function Prewarm() {
   const project = useEditor((s) => s.project)
   // A synthetic clip that lights up every inspector section (audio, fades, transform).
   const dummy = useMemo(
-    () => project && baseClip({ kind: 'video', name: 'warm', trackId: project.tracks[0].id, hasAudio: true, duration: 4_000_000, sourceDuration: 4_000_000 }),
+    () => project && baseClip({ kind: 'video', name: 'warm', trackId: mainTrack(project).id, hasAudio: true, duration: 4_000_000, sourceDuration: 4_000_000 }),
     [project],
   )
   useEffect(() => {

@@ -1,10 +1,11 @@
 /**
  * Pure timeline operations. They mutate the given project (an Immer draft in the app,
  * a plain object in tests). The main video track is magnetic: its clips are always
- * contiguous from 0. Other tracks are free placement with no overlaps.
+ * contiguous from 0. Other tracks (extra video tracks included) are free placement with
+ * no overlaps.
  */
-import type { AspectId, Clip, FitMode, Micros, Project, TierId, Track, Transition } from './model'
-import { uid } from './factory'
+import type { AspectId, Clip, FitMode, Micros, Project, TierId, Track, TrackKind, Transition } from './model'
+import { newTrack, TRACK_LABELS, uid } from './factory'
 import { resolutionFor } from './presets'
 import { frameDuration } from './time'
 
@@ -12,13 +13,56 @@ const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T
 
 export const minClipDuration = (fps: number): Micros => frameDuration(fps)
 
+/** The magnetic track: the bottom video row (extra video tracks are added above it). */
 export function mainTrack(p: Project): Track {
-  const t = p.tracks.find((t) => t.kind === 'video')
+  const t = p.tracks.findLast((t) => t.kind === 'video')
   if (!t) throw new Error('Project has no video track')
   return t
 }
 
 export const isMain = (p: Project, trackId: string): boolean => mainTrack(p).id === trackId
+
+/**
+ * Add an empty track. Video tracks go above the topmost video row (upper rows draw on top,
+ * and the main track stays the bottom one); other kinds go after the last of their kind.
+ */
+export function insertTrack(p: Project, kind: TrackKind): Track {
+  const names = new Set(p.tracks.map((t) => t.name))
+  let n = p.tracks.filter((t) => t.kind === kind).length + 1
+  while (names.has(`${TRACK_LABELS[kind]} ${n}`)) n++
+  const t = newTrack(kind, `${TRACK_LABELS[kind]} ${n}`)
+  const at = kind === 'video' ? p.tracks.findIndex((x) => x.kind === 'video') : p.tracks.findLastIndex((x) => x.kind === kind) + 1
+  p.tracks.splice(Math.max(0, at), 0, t)
+  return t
+}
+
+/**
+ * Rows (final indexes) a track may move to. The main track has to stay the bottom video row,
+ * so other video tracks stay above it and it stays below them; every other kind is free.
+ */
+export function trackMoveRange(p: Project, trackId: string): [number, number] | null {
+  const idx = p.tracks.findIndex((t) => t.id === trackId)
+  if (idx < 0) return null
+  const last = p.tracks.length - 1
+  const t = p.tracks[idx]
+  if (t.kind !== 'video') return [0, last]
+  const main = p.tracks.indexOf(mainTrack(p))
+  if (idx !== main) return [0, main - 1]
+  const above = p.tracks.findLastIndex((x, i) => i !== idx && x.kind === 'video')
+  return [above + 1, last]
+}
+
+/** Move a track to final index `to` (clamped to its allowed range). Returns whether it moved. */
+export function moveTrack(p: Project, trackId: string, to: number): boolean {
+  const range = trackMoveRange(p, trackId)
+  if (!range) return false
+  const idx = p.tracks.findIndex((t) => t.id === trackId)
+  const dest = Math.max(range[0], Math.min(range[1], to))
+  if (dest === idx) return false
+  const [t] = p.tracks.splice(idx, 1)
+  p.tracks.splice(dest, 0, t)
+  return true
+}
 
 export function trackClips(p: Project, trackId: string, exclude?: ReadonlySet<string>): Clip[] {
   return p.clips
@@ -232,11 +276,21 @@ export function trimPreview(p: Project, id: string, edge: 'start' | 'end', delta
   }
 }
 
+/**
+ * Give a clip a trimmed extent. Volume keys stay on the same source moment: a head trim
+ * shifts them by the in-point change (keys outside the clip are kept for trimming back).
+ */
+export function applyTrim(c: Clip, r: TrimResult): void {
+  const shift = r.inPoint - c.inPoint
+  if (shift && c.volumeKeys?.length) c.volumeKeys = c.volumeKeys.map((k) => ({ t: k.t - shift, gain: k.gain }))
+  Object.assign(c, r)
+}
+
 export function trimClip(p: Project, id: string, edge: 'start' | 'end', delta: Micros): void {
   const r = trimPreview(p, id, edge, delta)
   const c = findClip(p, id)
   if (!r || !c) return
-  Object.assign(c, r)
+  applyTrim(c, r)
   normalize(p)
 }
 
@@ -253,6 +307,9 @@ export function splitClip(p: Project, id: string, at: Micros): string | null {
   right.duration = c.duration - left
   right.inPoint = c.sourceDuration != null ? c.inPoint + left : c.inPoint
   right.fadeIn = { ...right.fadeIn, duration: 0 }
+  // Both halves keep the whole envelope (re-based on the right), so neither changes shape
+  // and either can be trimmed back out over the other's keys.
+  if (right.volumeKeys) right.volumeKeys = right.volumeKeys.map((k) => ({ t: k.t - left, gain: k.gain }))
   c.duration = left
   c.fadeOut = { ...c.fadeOut, duration: 0 }
   p.clips.push(right)
@@ -324,6 +381,39 @@ export function setTransition(p: Project, fromId: string, toId: string, duration
   if (existing) existing.duration = duration
   else p.transitions.push({ id: uid(), fromClipId: fromId, toClipId: toId, duration })
   pruneTransitions(p)
+}
+
+// ---------------------------------------------------------------------------
+// Gaps
+// ---------------------------------------------------------------------------
+
+const hasGap = (clips: Clip[]): boolean => clips.some((c, i) => i > 0 && c.start - clipEnd(clips[i - 1]) > 1)
+
+/** Tracks of `kind` with dead space between clips (the magnetic main track never has any). */
+export function tracksWithGaps(p: Project, kind: TrackKind = 'video'): Track[] {
+  return p.tracks.filter((t) => t.kind === kind && hasGap(trackClips(p, t.id)))
+}
+
+/**
+ * Butt clips together. On each track of `kind` (or just `trackIds`), the first clip stays put
+ * and every later clip moves left to start where the previous one ends. Clips that already
+ * touch move as a unit, so their transitions stay intact. Returns how many gaps were closed.
+ */
+export function closeGaps(p: Project, kind: TrackKind = 'video', trackIds?: readonly string[]): number {
+  let closed = 0
+  for (const t of p.tracks) {
+    if (t.kind !== kind || (trackIds && !trackIds.includes(t.id))) continue
+    const clips = trackClips(p, t.id)
+    let prevEnd = clips.length ? clipEnd(clips[0]) : 0 // original layout, to count real gaps
+    for (let i = 1; i < clips.length; i++) {
+      if (clips[i].start - prevEnd > 1) closed++
+      prevEnd = clipEnd(clips[i])
+      const end = clipEnd(clips[i - 1])
+      if (clips[i].start !== end) clips[i].start = end
+    }
+  }
+  if (closed) normalize(p)
+  return closed
 }
 
 // ---------------------------------------------------------------------------

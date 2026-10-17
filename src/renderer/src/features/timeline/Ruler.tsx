@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useEditor } from '@/state/store'
 import { formatTime } from '@shared/time'
 import { beginScrub } from './interactions'
-import { HEADER_W, RULER_H, view } from './view'
+import { RULER_H, view } from './view'
 
 const STEPS = [0.04, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
 
@@ -11,6 +11,7 @@ export function Ruler() {
   const ref = useRef<HTMLCanvasElement>(null)
   const pxPerSec = useEditor((s) => s.pxPerSec)
   const fps = useEditor((s) => s.project?.settings.fps ?? 30)
+  const header = useEditor((s) => s.headerW)
 
   useEffect(() => {
     const canvas = ref.current
@@ -20,7 +21,7 @@ export function Ruler() {
     const draw = () => {
       raf = 0
       const dpr = window.devicePixelRatio || 1
-      const w = Math.max(1, sc.clientWidth - HEADER_W)
+      const w = Math.max(1, sc.clientWidth - header)
       if (canvas.width !== Math.round(w * dpr)) {
         canvas.width = Math.round(w * dpr)
         canvas.height = Math.round(RULER_H * dpr)
@@ -63,13 +64,13 @@ export function Ruler() {
       ro.disconnect()
       cancelAnimationFrame(raf)
     }
-  }, [pxPerSec, fps])
+  }, [pxPerSec, fps, header])
 
   return (
     <canvas
       ref={ref}
       className="sticky cursor-pointer"
-      style={{ left: HEADER_W }}
+      style={{ left: header }}
       onPointerDown={(e) => e.button === 0 && beginScrub(e.nativeEvent)}
     />
   )

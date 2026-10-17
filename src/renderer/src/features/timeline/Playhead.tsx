@@ -2,26 +2,27 @@ import { useEffect, useRef } from 'react'
 import { engine } from '@/engine/client'
 import { useEditor } from '@/state/store'
 import { beginScrub } from './interactions'
-import { HEADER_W, RULER_H, view } from './view'
+import { RULER_H, view } from './view'
 
 /** Playhead line + head, moved by transform from the clock (never through React state). */
 export function Playhead() {
   const line = useRef<HTMLDivElement>(null)
   const pxPerSec = useEditor((s) => s.pxPerSec)
+  const header = useEditor((s) => s.headerW)
 
   useEffect(
     () =>
       engine().subscribe((t, playing) => {
-        const x = HEADER_W + (t / 1e6) * pxPerSec
+        const x = header + (t / 1e6) * pxPerSec
         if (line.current) line.current.style.transform = `translateX(${x}px)`
         const sc = view.scroller
         if (sc && playing) {
           // Page-follow while playing.
           const vx = x - sc.scrollLeft
-          if (vx > sc.clientWidth - 40 || vx < HEADER_W) sc.scrollLeft = Math.max(0, x - HEADER_W - 40)
+          if (vx > sc.clientWidth - 40 || vx < header) sc.scrollLeft = Math.max(0, x - header - 40)
         }
       }),
-    [pxPerSec],
+    [pxPerSec, header],
   )
 
   return (

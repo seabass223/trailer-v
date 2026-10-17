@@ -11,6 +11,7 @@ import { updateClip } from '@/features/editor/actions'
 import { selectedClip, useEditor } from '@/state/store'
 import { mediaRect, type Rect } from '@shared/geometry'
 import type { Clip, Project, Transform } from '@shared/model'
+import { framePlan } from '@shared/render-plan'
 import { clipEnd } from '@shared/timeline'
 import { InlineTextEditor } from './InlineTextEditor'
 
@@ -53,10 +54,16 @@ export function TransformOverlay({ width, height }: { width: number; height: num
       el.style.height = `${(r[3] - r[1]) * k}px`
     }
     place(visual.transform)
+    const onVideoTrack = project.tracks.find((x) => x.id === visual.trackId)?.kind === 'video'
     return engine().subscribe((t) => {
       const el = boxRef.current
       if (!el) return
-      const inside = t >= visual.start && t < clipEnd(visual) && !engine().playing
+      let inside = t >= visual.start && t < clipEnd(visual) && !engine().playing
+      // A video clip covered by an upper video track (or on a hidden one) isn't on screen to manipulate.
+      if (inside && onVideoTrack) {
+        const plan = framePlan(project, t)
+        inside = [...plan.base, ...plan.standby].some((l) => l.clip.id === visual.id)
+      }
       el.style.display = inside ? 'block' : 'none'
     })
   }, [visual, project, width, height, inline])

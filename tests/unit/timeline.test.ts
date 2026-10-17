@@ -3,8 +3,8 @@ import { baseClip, newProject } from '@shared/factory'
 import type { Clip, Project } from '@shared/model'
 import { resolutionFor } from '@shared/presets'
 import {
-  addClip, applyFormat, deleteClips, mainTrack, moveClip, projectDuration, setTransition, splitAt, splitClip,
-  trackClips, trimClip, trimPreview,
+  addClip, applyFormat, closeGaps, deleteClips, duplicateClip, insertTrack, isMain, mainTrack, moveClip, moveTrack, projectDuration,
+  setTransition, splitAt, splitClip, trackClips, trackMoveRange, tracksWithGaps, trimClip, trimPreview,
 } from '@shared/timeline'
 
 const S = 1_000_000
@@ -148,6 +148,134 @@ describe('transitions', () => {
     setTransition(p, a.id, b.id, S)
     const right = splitClip(p, a.id, 1 * S)!
     expect(p.transitions[0].fromClipId).toBe(right)
+  })
+})
+
+describe('extra video tracks', () => {
+  it('stack above the main track, which stays the magnetic bottom video row', () => {
+    const p = project()
+    const main = mainTrack(p)
+    const v2 = insertTrack(p, 'video')
+    const v3 = insertTrack(p, 'video')
+    expect(p.tracks.map((t) => t.name)).toEqual(['Video 3', 'Video 2', 'Video', 'Text', 'Image', 'Audio'])
+    expect(mainTrack(p)).toBe(main)
+    expect(isMain(p, v2.id) || isMain(p, v3.id)).toBe(false)
+  })
+
+  it('reorder freely, but the main track stays the bottom video row', () => {
+    const p = project()
+    const main = mainTrack(p)
+    const v2 = insertTrack(p, 'video')
+    const order = () => p.tracks.map((t) => t.name)
+    // ['Video 2', 'Video', 'Text', 'Image', 'Audio']
+    expect(moveTrack(p, p.tracks[4].id, 0)).toBe(true)
+    expect(order()).toEqual(['Audio', 'Video 2', 'Video', 'Text', 'Image'])
+    // An upper video track can't drop below the main one: it clamps to just above it.
+    expect(moveTrack(p, v2.id, 4)).toBe(false)
+    expect(trackMoveRange(p, v2.id)).toEqual([0, 1])
+    // The main track can't rise above another video track, but can go to the bottom.
+    expect(trackMoveRange(p, main.id)).toEqual([2, 4])
+    expect(moveTrack(p, main.id, 0)).toBe(false)
+    expect(moveTrack(p, main.id, 4)).toBe(true)
+    expect(order()).toEqual(['Audio', 'Video 2', 'Text', 'Image', 'Video'])
+    expect(mainTrack(p)).toBe(main)
+    expect(moveTrack(p, 'nope', 0)).toBe(false)
+  })
+
+  it('names new tracks uniquely and places other kinds after their own kind', () => {
+    const p = project()
+    const v2 = insertTrack(p, 'video')
+    insertTrack(p, 'video')
+    p.tracks = p.tracks.filter((t) => t !== v2)
+    expect(insertTrack(p, 'video').name).toBe('Video 4') // 'Video 3' is still taken
+    const t2 = insertTrack(p, 'text')
+    expect(p.tracks[p.tracks.indexOf(t2) - 1].name).toBe('Text')
+  })
+
+  it('are free placement: clips may overlap the main track and moves never ripple', () => {
+    const p = project()
+    const main = mainTrack(p).id
+    const v2 = insertTrack(p, 'video').id
+    const a = video(p, 'a', 4)
+    const b = video(p, 'b', 4)
+    addClip(p, a, main, 0)
+    addClip(p, b, main, 10 * S)
+    const r = video(p, 'r', 2)
+    addClip(p, r, v2, 5 * S)
+    expect(r.start).toBe(5 * S)
+    expect(names(p)).toEqual(['a@0', 'b@4'])
+    // A second clip colliding on the same upper track lands in the nearest gap.
+    const r2 = video(p, 'r2', 2)
+    addClip(p, r2, v2, 6 * S)
+    expect(r2.start).toBe(7 * S)
+    // Main -> upper track: the main track closes the gap, the clip keeps its time.
+    moveClip(p, a.id, v2, 0)
+    expect(a.trackId).toBe(v2)
+    expect(a.start).toBe(0) // fits before r
+    expect(names(p)).toEqual(['b@0'])
+    // Upper -> main: inserted magnetically.
+    moveClip(p, r.id, main, 5 * S)
+    expect(names(p)).toEqual(['b@0', 'r@4'])
+  })
+
+  it('trim against their own neighbours and duplicate into free space', () => {
+    const p = project()
+    const v2 = insertTrack(p, 'video').id
+    const a = video(p, 'a', 6)
+    const b = video(p, 'b', 2)
+    addClip(p, a, v2, 0)
+    addClip(p, b, v2, 8 * S)
+    expect(trimPreview(p, a.id, 'end', 0)!.duration).toBe(6 * S)
+    trimClip(p, a.id, 'end', -2 * S)
+    expect(a.duration).toBe(4 * S)
+    expect(b.start).toBe(8 * S) // no ripple
+    const id = duplicateClip(p, b.id)
+    const copy = p.clips.find((c) => c.id === id)!
+    expect(copy.trackId).toBe(v2)
+    expect(copy.start).toBe(10 * S)
+  })
+})
+
+describe('close gaps', () => {
+  it('butts clips together after the first one and keeps transitions between touching clips', () => {
+    const p = project()
+    const v2 = insertTrack(p, 'video').id
+    const a = video(p, 'a', 2)
+    const b = video(p, 'b', 3)
+    const c = video(p, 'c', 4)
+    const d = video(p, 'd', 1)
+    addClip(p, a, v2, 1 * S) // leading space before the first clip is kept
+    addClip(p, b, v2, 5 * S)
+    addClip(p, c, v2, 8 * S) // touches b
+    addClip(p, d, v2, 20 * S)
+    setTransition(p, b.id, c.id, S)
+    expect(tracksWithGaps(p).map((t) => t.id)).toEqual([v2])
+
+    expect(closeGaps(p)).toBe(2)
+    expect(trackClips(p, v2).map((x) => [x.name, x.start / S])).toEqual([['a', 1], ['b', 3], ['c', 6], ['d', 10]])
+    expect(p.transitions).toHaveLength(1)
+    expect(p.transitions[0]).toMatchObject({ fromClipId: b.id, toClipId: c.id, duration: S })
+    expect(tracksWithGaps(p)).toEqual([])
+    expect(closeGaps(p)).toBe(0)
+  })
+
+  it('only touches video tracks (or the given track)', () => {
+    const p = project()
+    const v2 = insertTrack(p, 'video').id
+    const v3 = insertTrack(p, 'video').id
+    const text = track(p, 'text')
+    for (const [t, at] of [[v2, 0], [v2, 10], [v3, 0], [v3, 10]] as const) addClip(p, video(p, `x${at}`, 2), t, at * S)
+    const t1 = baseClip({ kind: 'text', name: 't', trackId: text.id, duration: S })
+    const t2 = baseClip({ kind: 'text', name: 'u', trackId: text.id, duration: S })
+    addClip(p, t1, text.id, 0)
+    addClip(p, t2, text.id, 6 * S)
+
+    expect(closeGaps(p, 'video', [v2])).toBe(1)
+    expect(trackClips(p, v2).map((x) => x.start / S)).toEqual([0, 2])
+    expect(trackClips(p, v3).map((x) => x.start / S)).toEqual([0, 10])
+    expect(closeGaps(p)).toBe(1)
+    expect(trackClips(p, v3).map((x) => x.start / S)).toEqual([0, 2])
+    expect(t2.start).toBe(6 * S) // text track untouched
   })
 })
 

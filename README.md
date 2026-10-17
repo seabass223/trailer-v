@@ -6,6 +6,8 @@ A GPU-accelerated video editor for YouTube, built for an NVIDIA RTX card on Wind
 - **Export:** the same compositor renders each frame in a hidden export window, converts it to NV12 on the GPU, and pipes it straight into FFmpeg `h264_nvenc` / `hevc_nvenc`.
 - **UI:** React + shadcn/ui.
 
+**Production build:** `npm run dist` → `dist\Trailer-V Setup 0.1.0.exe`. See [Build the installer](#build-the-installer-production).
+
 ## Requirements
 
 - Windows 10/11 with an NVIDIA GPU (NVENC).
@@ -21,13 +23,25 @@ npm install
 npm run dev
 ```
 
-## Build the installer
+## Build the installer (production)
 
 ```bash
 npm run dist
 ```
 
-This writes `dist\Trailer-V Setup 0.1.0.exe`. To produce the unpacked app at `dist\win-unpacked\Trailer-V.exe` instead, run `npm run dist:dir`.
+This writes `dist\Trailer-V Setup 0.1.0.exe`. Run it to install Trailer-V. The installer adds a Start menu entry and a desktop shortcut, both with the app icon.
+
+To pin it to Start on Windows 11, open Start → **All**, right-click **Trailer-V**, and choose **Pin to Start**. To pin it to the taskbar, choose **More → Pin to taskbar**.
+
+To produce the unpacked app at `dist\win-unpacked\Trailer-V.exe` without an installer, run `npm run dist:dir`.
+
+### App icon
+
+The icon source is `build/icon.svg`. The build uses `build/icon.ico` and `build/icon.png`, which are committed. After editing the SVG, regenerate them:
+
+```bash
+npm run icon
+```
 
 ## Tests
 

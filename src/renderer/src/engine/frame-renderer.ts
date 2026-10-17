@@ -5,7 +5,7 @@
 import { mediaRect } from '@shared/geometry'
 import type { Clip, Micros, Project } from '@shared/model'
 import { mediaUrl } from '@shared/media-url'
-import { framePlan, trackSpans, sourceTimeAt, type VisualLayer } from '@shared/render-plan'
+import { framePlan, videoChangesBetween, type FramePlan, type VisualLayer } from '@shared/render-plan'
 import { ClipStream } from './decode/clip-stream'
 import { releaseUnusedSources, videoSource } from './decode/sources'
 import { Compositor, hexToRgba, type Draw, type FrameDraws, type Rect } from './gpu/compositor'
@@ -155,25 +155,26 @@ export class FrameRenderer {
     return entry
   }
 
-  /** Point decoders at time t (and pre-roll clips starting soon). */
+  /**
+   * Point decoders at time t, and while playing pre-roll clips about to be shown (starting
+   * soon, or revealed when a video track above them ends or fades out). Covered clips get no
+   * decoder.
+   */
   prepare(t: Micros, playing: boolean): void {
     const p = this.project
     if (!p) return
     const lookahead = playing ? this.playLookahead : 1
     const wanted = new Set<string>()
-    for (const track of p.tracks) {
-      if (track.kind === 'audio' || track.hidden) continue
-      for (const s of trackSpans(p, track.id)) {
-        const c = s.clip
-        if (c.kind !== 'video' || !c.source) continue
-        const active = t >= s.from && t < s.to
-        const upcoming = playing && s.from > t && s.from - t < PREROLL_US
-        if (!active && !upcoming) continue
+    const want = (plan: FramePlan) => {
+      for (const l of [...plan.base, ...plan.standby]) {
+        const c = l.clip
+        if (c.kind !== 'video' || !c.source || wanted.has(c.id)) continue
         wanted.add(c.id)
-        const st = this.stream(c)
-        st?.want(sourceTimeAt(c, active ? t : s.from), lookahead)
+        this.stream(c)?.want(l.sourceTime, lookahead)
       }
     }
+    want(framePlan(p, t))
+    if (playing) for (const at of videoChangesBetween(p, t, t + PREROLL_US)) want(framePlan(p, at))
     // Free decoders that are neither visible nor about to be.
     for (const [id, s] of this.ready) {
       if (!wanted.has(id) && performance.now() - s.lastUsed > 1500) this.dropStream(id, this.streams.get(id)!)
@@ -236,12 +237,12 @@ export class FrameRenderer {
     return res
   }
 
-  /** True when every video layer visible at `t` has at least `n` decoded frames ready ahead. */
+  /** True when every video layer visible (or fading in) at `t` has at least `n` decoded frames ready ahead. */
   buffered(t: Micros, n: number): boolean {
     const p = this.project
     if (!p) return true
     const plan = framePlan(p, t)
-    for (const l of [...plan.base, ...plan.overlays]) {
+    for (const l of [...plan.base, ...plan.standby, ...plan.overlays]) {
       const c = l.clip
       if (c.kind !== 'video' || !c.source || this.failed.has(c.source)) continue
       const s = this.ready.get(c.id)
