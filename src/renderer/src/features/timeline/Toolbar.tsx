@@ -5,10 +5,10 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Separator } from '@/components/ui/separator'
 import { Slider } from '@/components/ui/slider'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { closeVideoGaps, deleteSelection, duplicateSelection, splitAtPlayhead } from '@/features/editor/actions'
+import { deleteSelection, duplicateSelection, seamState, seamVideo, splitAtPlayhead } from '@/features/editor/actions'
 import { cn } from '@/lib/utils'
 import { jumpTo, redo, undo, useEditor } from '@/state/store'
-import { projectDuration, tracksWithGaps } from '@shared/timeline'
+import { projectDuration } from '@shared/timeline'
 import { MAX_PPS, MIN_PPS, setZoom, zoomToFit } from './view'
 
 function Tool({ label, keys, onClick, disabled, children, active }: { label: string; keys?: string; onClick: () => void; disabled?: boolean; children: ReactNode; active?: boolean }) {
@@ -38,7 +38,14 @@ export function Toolbar() {
   const snapping = useEditor((s) => s.snapping)
   const pxPerSec = useEditor((s) => s.pxPerSec)
   const duration = useEditor((s) => (s.project ? projectDuration(s.project) : 0))
-  const videoGaps = useEditor((s) => (s.project ? tracksWithGaps(s.project).length > 0 : false))
+  // A string (not an object) so the selector result is stable between renders.
+  const seam = useEditor((s) => seamState(s.project, s.selection))
+  const [seamKind, seamArg] = seam.split(/:(.*)/)
+  const seamLabel =
+    seamKind === 'seam' ? `Seam ${seamArg} selected clips, top track first` :
+    seamKind === 'seamed' ? 'Selected clips are already seamed' :
+    seamKind === 'blocked' ? `Can't seam: "${seamArg}" has another clip in the way` :
+    seamKind === 'gaps' ? 'Close gaps between video clips' : 'No gaps between video clips'
 
   return (
     <div className="flex h-12 shrink-0 items-center gap-1 px-3">
@@ -80,8 +87,7 @@ export function Toolbar() {
       <Tool label="Split" keys="S" onClick={splitAtPlayhead}><Scissors className="size-5" /></Tool>
       <Tool label="Duplicate" keys="Ctrl+D" onClick={duplicateSelection} disabled={!single}><Copy className="size-[18px]" /></Tool>
       <Tool label="Delete" keys="Del" onClick={deleteSelection} disabled={!hasSel}><Trash2 className="size-5" /></Tool>
-      <Tool label={videoGaps ? 'Close gaps between video clips' : 'No gaps between video clips'} keys="G"
-        onClick={() => closeVideoGaps()} disabled={!videoGaps}>
+      <Tool label={seamLabel} keys="G" onClick={seamVideo} disabled={seamKind !== 'seam' && seamKind !== 'gaps'} active={seamKind === 'seam'}>
         <FoldHorizontal className="size-5" />
       </Tool>
 

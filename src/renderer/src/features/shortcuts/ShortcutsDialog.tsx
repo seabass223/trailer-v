@@ -3,7 +3,7 @@ import { useEditor } from '@/state/store'
 
 const GROUPS: [string, [string, string][]][] = [
   ['Playback', [['Space', 'Play / pause'], ['Home / End', 'Start / end'], ['← / →', 'Previous / next frame'], ['Shift + ← / →', 'Back / forward 1 s'], ['J / K / L', 'Back 5 s / pause / play'], ['F', 'Fullscreen']]],
-  ['Editing', [['S  or  Ctrl+B', 'Split at playhead'], ['Delete', 'Delete selection'], ['Ctrl+D', 'Duplicate'], ['M', 'Mute / unmute clip'], ['G', 'Close gaps between video clips'], ['Alt+click volume line', 'Add volume point'], ['Double-click point', 'Delete volume point'], ['Ctrl+A', 'Select all'], ['Ctrl+Z', 'Undo'], ['Ctrl+Y  or  Ctrl+Shift+Z', 'Redo'], ['Alt (while dragging)', 'Bypass snapping']]],
+  ['Editing', [['S  or  Ctrl+B', 'Split at playhead'], ['Delete', 'Delete selection'], ['Ctrl+D', 'Duplicate'], ['M', 'Mute / unmute clip'], ['G', 'Seam selected video clips (or close gaps)'], ['Alt+click volume line', 'Add volume point'], ['Double-click point', 'Delete volume point'], ['Ctrl+A', 'Select all'], ['Ctrl+Z', 'Undo'], ['Ctrl+Y  or  Ctrl+Shift+Z', 'Redo'], ['Alt (while dragging)', 'Bypass snapping']]],
   ['View', [['+ / −  or  Ctrl+wheel', 'Zoom timeline'], ['Shift+Z', 'Zoom to fit'], ['Ctrl+Shift+P', 'Performance HUD'], ['Ctrl+E', 'Export'], ['Ctrl+S', 'Save now']]],
 ]
 

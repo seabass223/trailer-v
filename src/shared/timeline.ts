@@ -416,6 +416,63 @@ export function closeGaps(p: Project, kind: TrackKind = 'video', trackIds?: read
   return closed
 }
 
+export interface SeamPlan {
+  /** New start per clip id (only clips that will actually move). */
+  moves: Map<string, Micros>
+  /** Video clips that take part (non-main), in seam order. */
+  clips: Clip[]
+  tracks: number
+  /** Selected main-track clips: magnetic, so they stay where they are. */
+  skippedMain: number
+  /** A track where an unselected clip is in the way: nothing moves. */
+  blocked: Track | null
+}
+
+/**
+ * Plan a seam across tracks: the selected video clips are laid end to end in vertical track
+ * order (top row first; within a track, by time), each staying on its own track. The chain
+ * starts where the earliest of them starts. Pure: nothing is changed.
+ */
+export function seamPlan(p: Project, ids: readonly string[]): SeamPlan {
+  const set = new Set(ids)
+  const main = mainTrack(p)
+  const row = new Map(p.tracks.map((t, i) => [t.id, i]))
+  const video = p.clips.filter((c) => set.has(c.id) && p.tracks[row.get(c.trackId)!]?.kind === 'video')
+  const clips = video.filter((c) => c.trackId !== main.id).sort((a, b) => row.get(a.trackId)! - row.get(b.trackId)! || a.start - b.start)
+  const plan: SeamPlan = { moves: new Map(), clips, tracks: new Set(clips.map((c) => c.trackId)).size, skippedMain: video.length - clips.length, blocked: null }
+  if (!clips.length) return plan
+  let cursor = Math.min(...clips.map((c) => c.start))
+  const dest = new Map<string, Micros>()
+  for (const c of clips) {
+    dest.set(c.id, cursor)
+    cursor += c.duration
+  }
+  // Unselected clips on the same tracks must not end up overlapped.
+  for (const c of clips) {
+    const s = dest.get(c.id)!
+    const e = s + c.duration
+    const hit = p.clips.find((o) => o.trackId === c.trackId && !set.has(o.id) && o.start < e && clipEnd(o) > s)
+    if (hit) {
+      plan.blocked = p.tracks[row.get(c.trackId)!]
+      return plan
+    }
+  }
+  for (const c of clips) if (dest.get(c.id) !== c.start) plan.moves.set(c.id, dest.get(c.id)!)
+  return plan
+}
+
+/** Apply a seam plan (see seamPlan). Returns the number of clips moved. */
+export function seamAcrossTracks(p: Project, ids: readonly string[]): number {
+  const plan = seamPlan(p, ids)
+  if (plan.blocked || !plan.moves.size) return 0
+  for (const c of p.clips) {
+    const to = plan.moves.get(c.id)
+    if (to != null) c.start = to
+  }
+  normalize(p)
+  return plan.moves.size
+}
+
 // ---------------------------------------------------------------------------
 // Project-level
 // ---------------------------------------------------------------------------

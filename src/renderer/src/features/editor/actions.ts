@@ -9,7 +9,7 @@ import type { AspectId, Clip, DuckSettings, FitMode, MediaFile, Micros, Project,
 import { DEFAULT_IMAGE_DURATION, DEFAULT_XFADE } from '@shared/presets'
 import {
   addClip, adjacentPairs, applyFormat, closeGaps, deleteClips, duplicateClip, findClip, insertTrack, isMain, mainTrack, moveClip,
-  moveTrack, projectDuration, setTransition, splitAt, trimClip,
+  moveTrack, projectDuration, seamAcrossTracks, seamPlan, setTransition, splitAt, tracksWithGaps, trimClip,
 } from '@shared/timeline'
 
 const project = () => useEditor.getState().project
@@ -226,6 +226,56 @@ export function removeTrack(trackId: string): void {
   commit(`Remove ${t.name}`, (d) => {
     d.tracks = d.tracks.filter((x) => x.id !== trackId)
   })
+}
+
+/**
+ * What the seam button would do now, as a stable string for UI selectors:
+ * `seam:<n>` (chain the selection), `seamed`, `blocked:<track name>`, `gaps`, or `none`.
+ */
+let seamMemo: { p: Project | null; selection: readonly string[]; value: string } | null = null
+
+export function seamState(p: Project | null, selection: readonly string[]): string {
+  // Selectors run on every store update (zoom, HUD...): recompute only when inputs change.
+  if (seamMemo && seamMemo.p === p && seamMemo.selection === selection) return seamMemo.value
+  const value = computeSeamState(p, selection)
+  seamMemo = { p, selection, value }
+  return value
+}
+
+function computeSeamState(p: Project | null, selection: readonly string[]): string {
+  if (!p) return 'none'
+  const plan = seamPlan(p, selection)
+  if (plan.clips.length >= 2) {
+    if (plan.blocked) return `blocked:${plan.blocked.name}`
+    return plan.moves.size ? `seam:${plan.clips.length}` : 'seamed'
+  }
+  return tracksWithGaps(p).length ? 'gaps' : 'none'
+}
+
+/**
+ * Seam button / G: with 2+ video clips selected, chain them end to end in top-to-bottom track
+ * order (each stays on its own track); otherwise close gaps within every video track.
+ */
+export function seamVideo(): void {
+  const p = project()
+  if (!p) return
+  const selection = useEditor.getState().selection
+  const plan = seamPlan(p, selection)
+  if (plan.clips.length < 2) return closeVideoGaps()
+  if (plan.blocked) {
+    toast.error(`Can't seam: "${plan.blocked.name}" has another clip in the way`, { duration: 2500 })
+    return
+  }
+  if (!plan.moves.size) {
+    toast('Selected clips are already seamed', { duration: 1500 })
+    return
+  }
+  commit(`Seam ${plan.clips.length} clips`, (d) => {
+    seamAcrossTracks(d, selection)
+  })
+  const across = plan.tracks > 1 ? ` across ${plan.tracks} tracks` : ''
+  const main = plan.skippedMain ? ' (main-track clips stay put)' : ''
+  toast.success(`Seamed ${plan.clips.length} clips${across}${main}`, { duration: 2000 })
 }
 
 /** Butt video clips together (all video tracks, or one), keeping transitions; one undo step. */

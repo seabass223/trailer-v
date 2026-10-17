@@ -4,7 +4,7 @@ import type { Clip, Project } from '@shared/model'
 import { resolutionFor } from '@shared/presets'
 import {
   addClip, applyFormat, closeGaps, deleteClips, duplicateClip, insertTrack, isMain, mainTrack, moveClip, moveTrack, projectDuration,
-  setTransition, splitAt, splitClip, trackClips, trackMoveRange, tracksWithGaps, trimClip, trimPreview,
+  seamAcrossTracks, seamPlan, setTransition, splitAt, splitClip, trackClips, trackMoveRange, tracksWithGaps, trimClip, trimPreview,
 } from '@shared/timeline'
 
 const S = 1_000_000
@@ -276,6 +276,70 @@ describe('close gaps', () => {
     expect(closeGaps(p)).toBe(1)
     expect(trackClips(p, v3).map((x) => x.start / S)).toEqual([0, 2])
     expect(t2.start).toBe(6 * S) // text track untouched
+  })
+})
+
+describe('seam across tracks', () => {
+  // insertTrack puts each new video track on top, so the last one inserted is the top row.
+  function stack() {
+    const p = project()
+    const low = insertTrack(p, 'video').id
+    const mid = insertTrack(p, 'video').id
+    const top = insertTrack(p, 'video').id
+    return { p, top, mid, low, main: mainTrack(p).id }
+  }
+
+  it('chains selected clips top row first, each on its own track, from the earliest start', () => {
+    const { p, top, mid, low, main } = stack()
+    const a = video(p, 'a', 2)
+    const b = video(p, 'b', 3)
+    const c = video(p, 'c', 1)
+    const m = video(p, 'm', 4)
+    addClip(p, a, top, 10 * S)
+    addClip(p, b, mid, 1 * S)
+    addClip(p, c, low, 5 * S)
+    addClip(p, m, main, 0)
+    const text = track(p, 'text')
+    const t = baseClip({ kind: 'text', name: 't', trackId: text.id, duration: S })
+    addClip(p, t, text.id, 20 * S)
+
+    const plan = seamPlan(p, p.clips.map((x) => x.id)) // Ctrl+A
+    expect(plan.clips.map((x) => x.name)).toEqual(['a', 'b', 'c'])
+    expect([plan.tracks, plan.skippedMain, plan.blocked]).toEqual([3, 1, null])
+
+    expect(seamAcrossTracks(p, p.clips.map((x) => x.id))).toBe(3)
+    expect([a, b, c].map((x) => [x.trackId, x.start / S])).toEqual([[top, 1], [mid, 3], [low, 6]])
+    expect(m.start).toBe(0) // main track stays put
+    expect(t.start).toBe(20 * S) // non-video untouched
+    expect(seamPlan(p, [a.id, b.id, c.id]).moves.size).toBe(0) // already seamed
+  })
+
+  it('keeps cross-fades between selected clips on the same track', () => {
+    const { p, top, mid } = stack()
+    const a = video(p, 'a', 2)
+    const b = video(p, 'b', 2)
+    const c = video(p, 'c', 2)
+    addClip(p, a, top, 0)
+    addClip(p, b, top, 2 * S)
+    setTransition(p, a.id, b.id, S)
+    addClip(p, c, mid, 30 * S)
+    seamAcrossTracks(p, [a.id, b.id, c.id])
+    expect(c.start).toBe(4 * S)
+    expect(p.transitions).toHaveLength(1)
+  })
+
+  it('refuses when an unselected clip is in the way, changing nothing', () => {
+    const { p, top, mid } = stack()
+    const a = video(p, 'a', 4)
+    const b = video(p, 'b', 2)
+    const x = video(p, 'x', 2)
+    addClip(p, a, top, 0)
+    addClip(p, b, mid, 20 * S)
+    addClip(p, x, mid, 5 * S) // b would land at 4-6, on top of x
+    const plan = seamPlan(p, [a.id, b.id])
+    expect(plan.blocked?.id).toBe(mid)
+    expect(seamAcrossTracks(p, [a.id, b.id])).toBe(0)
+    expect(b.start).toBe(20 * S)
   })
 })
 
