@@ -9,7 +9,8 @@ export interface RunStyle {
   fontFamily: string
   fontSize: number
   color: string
-  bold: boolean
+  /** CSS font weight, 100–950. */
+  weight: number
   italic: boolean
   underline: boolean
   strike: boolean
@@ -45,7 +46,7 @@ export const DEFAULT_STYLE: RunStyle = {
   fontFamily: 'Segoe UI',
   fontSize: 96,
   color: '#ffffff',
-  bold: false,
+  weight: 400,
   italic: false,
   underline: false,
   strike: false,
@@ -53,7 +54,7 @@ export const DEFAULT_STYLE: RunStyle = {
 }
 
 export function cssFont(s: RunStyle, unit: number): string {
-  return `${s.italic ? 'italic ' : ''}${s.bold ? '700 ' : '400 '}${Math.max(1, s.fontSize * unit)}px "${s.fontFamily}", "Segoe UI", sans-serif`
+  return `${s.italic ? 'italic ' : ''}${s.weight} ${Math.max(1, s.fontSize * unit)}px "${s.fontFamily}", "Segoe UI", sans-serif`
 }
 
 function px(v: unknown, fallback: number): number {
@@ -65,12 +66,24 @@ function px(v: unknown, fallback: number): number {
   return fallback
 }
 
+/** Letter spacing in reference units: `em` values scale with the font size. */
+function spacing(v: unknown, fontSize: number): number {
+  if (typeof v === 'string' && v.trim().endsWith('em')) return (parseFloat(v) || 0) * fontSize
+  return px(v, 0)
+}
+
+/** CSS `bolder`: the bold mark renders as <strong> inside the textStyle span. */
+const bolder = (w: number): number => (w < 350 ? 400 : w < 550 ? 700 : Math.max(900, w))
+
 function styleFrom(marks: RichNode['marks']): RunStyle {
   const s = { ...DEFAULT_STYLE }
+  let bold = false
+  let weight: number | null = null
+  let letterSpacing: unknown = null
   for (const m of marks ?? []) {
     switch (m.type) {
       case 'bold':
-        s.bold = true
+        bold = true
         break
       case 'italic':
         s.italic = true
@@ -86,11 +99,14 @@ function styleFrom(marks: RichNode['marks']): RunStyle {
         if (typeof a.fontFamily === 'string' && a.fontFamily) s.fontFamily = a.fontFamily.replace(/["']/g, '').split(',')[0].trim()
         if (a.fontSize) s.fontSize = px(a.fontSize, s.fontSize)
         if (typeof a.color === 'string' && a.color) s.color = a.color
-        if (a.letterSpacing) s.letterSpacing = px(a.letterSpacing, 0)
+        if (a.fontWeight) weight = px(a.fontWeight, 400)
+        if (a.letterSpacing) letterSpacing = a.letterSpacing
         break
       }
     }
   }
+  s.weight = bold ? bolder(weight ?? 400) : weight ?? 400
+  s.letterSpacing = spacing(letterSpacing, s.fontSize)
   return s
 }
 

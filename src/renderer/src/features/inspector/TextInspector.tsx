@@ -2,6 +2,7 @@ import { EditorContent, useEditor as useTiptap, useEditorState } from '@tiptap/r
 import { AlignCenter, AlignLeft, AlignRight, Bold, Italic, Strikethrough, Underline } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Toggle } from '@/components/ui/toggle'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
@@ -11,7 +12,8 @@ import { useEditor } from '@/state/store'
 import type { Clip, RichNode } from '@shared/model'
 import { ColorField, Row, Section, SliderRow } from './fields'
 import { FontPicker } from './FontPicker'
-import { textExtensions } from './text-extensions'
+import { useFontWeights, WEIGHT_NAMES } from './font-weights'
+import { letterSpacingAt, textExtensions, weightAt } from './text-extensions'
 
 /** Rich text editing with TipTap; preview is scaled so line breaks match the render. */
 export function TextInspector({ clip }: { clip: Clip }) {
@@ -71,7 +73,8 @@ export function TextInspector({ clip }: { clip: Clip }) {
         font: (a.fontFamily as string | undefined)?.replace(/["']/g, '') ?? 'Segoe UI',
         size: parseFloat((a.fontSize as string | undefined) ?? '96') || 96,
         color: (a.color as string | undefined) ?? '#ffffff',
-        bold: e.isActive('bold'),
+        weight: weightAt(e),
+        spacing: letterSpacingAt(e),
         italic: e.isActive('italic'),
         underline: e.isActive('underline'),
         strike: e.isActive('strike'),
@@ -80,12 +83,17 @@ export function TextInspector({ clip }: { clip: Clip }) {
     },
   })
 
-  // Apply to the selection, or to all text when nothing is selected.
-  const apply = (fn: (c: ReturnType<NonNullable<typeof editor>['chain']>) => ReturnType<NonNullable<typeof editor>['chain']>) => {
+  // Apply to the selection, or to all text when nothing is selected (the caret stays put).
+  // Controls you keep adjusting (size, weight, spacing) leave focus where it is.
+  const apply = (fn: (c: ReturnType<NonNullable<typeof editor>['chain']>) => ReturnType<NonNullable<typeof editor>['chain']>, focus = true) => {
     if (!editor) return
-    let chain = editor.chain().focus()
-    if (editor.state.selection.empty) chain = chain.selectAll()
-    fn(chain).run()
+    const { from, to, empty } = editor.state.selection
+    let chain = editor.chain()
+    if (focus) chain = chain.focus()
+    if (empty) chain = chain.selectAll()
+    chain = fn(chain)
+    if (empty) chain = chain.setTextSelection({ from, to })
+    chain.run()
   }
 
   const set = (label: string, fn: (c: Clip) => void, key?: string) => updateClip(clip.id, label, fn, key)
@@ -96,6 +104,9 @@ export function TextInspector({ clip }: { clip: Clip }) {
   const innerRef = Math.max(40, boxRef - text.box.padding * 2)
   const zoom = Math.max(0.05, (avail - 2) / boxRef)
   const lh = text.lineHeight ?? 1.15
+  const font = st?.font ?? 'Segoe UI'
+  const weight = st?.weight ?? 400
+  const weights = useFontWeights(font, weight)
 
   return (
     <>
@@ -118,16 +129,16 @@ export function TextInspector({ clip }: { clip: Clip }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <FontPicker value={st?.font ?? 'Segoe UI'} onChange={(f) => apply((c) => c.setFontFamily(f))} />
-          <Input type="number" min={8} max={600} className="h-8 w-[72px] tabular" value={Math.round(st?.size ?? 96)}
+          <FontPicker value={font} onChange={(f) => apply((c) => c.setFontFamily(f))} />
+          <Input type="number" min={8} max={600} aria-label="Font size" className="h-8 w-[72px] tabular" value={Math.round(st?.size ?? 96)}
             onChange={(e) => {
               const v = Number(e.target.value)
-              if (v >= 4 && v <= 1000) apply((c) => c.setFontSize(`${v}px`))
+              if (v >= 4 && v <= 1000) apply((c) => c.setFontSize(`${v}px`), false)
             }} />
           <ColorField value={st?.color ?? '#ffffff'} onChange={(v) => apply((c) => c.setColor(v))} />
         </div>
         <div className="flex items-center gap-1">
-          <Toggle size="sm" pressed={st?.bold} onPressedChange={() => apply((c) => c.toggleBold())} aria-label="Bold"><Bold /></Toggle>
+          <Toggle size="sm" pressed={weight >= 600} onPressedChange={(on) => apply((c) => c.setFontWeight(on ? 700 : 400))} aria-label="Bold"><Bold /></Toggle>
           <Toggle size="sm" pressed={st?.italic} onPressedChange={() => apply((c) => c.toggleItalic())} aria-label="Italic"><Italic /></Toggle>
           <Toggle size="sm" pressed={st?.underline} onPressedChange={() => apply((c) => c.toggleUnderline())} aria-label="Underline"><Underline /></Toggle>
           <Toggle size="sm" pressed={st?.strike} onPressedChange={() => apply((c) => c.toggleStrike())} aria-label="Strikethrough"><Strikethrough /></Toggle>
@@ -138,6 +149,22 @@ export function TextInspector({ clip }: { clip: Clip }) {
             <ToggleGroupItem value="right" aria-label="Align right"><AlignRight /></ToggleGroupItem>
           </ToggleGroup>
         </div>
+        <Row label="Weight">
+          <Select value={String(weight)} onValueChange={(v) => apply((c) => c.setFontWeight(Number(v)), false)}>
+            <SelectTrigger size="sm" className="w-full" aria-label="Font weight"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {weights.map((w) => (
+                <SelectItem key={w} value={String(w)}>
+                  <span style={{ fontFamily: `"${font}", "Segoe UI"`, fontWeight: w }}>{WEIGHT_NAMES[w] ?? 'Weight'}</span>
+                  <span className="ml-2 text-xs tabular text-muted-foreground">{w}</span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Row>
+        <SliderRow label="Letter spacing" value={Math.round((st?.spacing ?? 0) * 100)} min={-20} max={100} step={1}
+          format={(v) => `${v > 0 ? '+' : ''}${v}%`}
+          onChange={(v) => apply((c) => c.setLetterSpacing(v / 100), false)} onReset={() => apply((c) => c.setLetterSpacing(0), false)} />
         <SliderRow label="Line height" value={lh} min={0.7} max={2.5} step={0.05} format={(v) => v.toFixed(2)}
           onChange={(v) => set('Line height', (c) => { if (c.text) c.text.lineHeight = v }, 'lh')} onReset={() => set('Line height', (c) => { if (c.text) c.text.lineHeight = 1.15 })} />
       </Section>
