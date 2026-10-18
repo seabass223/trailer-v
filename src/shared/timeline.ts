@@ -424,14 +424,27 @@ export interface SeamPlan {
   tracks: number
   /** Selected main-track clips: magnetic, so they stay where they are. */
   skippedMain: number
-  /** A track where an unselected clip is in the way: nothing moves. */
-  blocked: Track | null
+  /** Clips that had to go past an unselected clip in their way. */
+  detoured: number
+}
+
+/** First start >= `from` where `duration` fits between the (disjoint) `taken` intervals. */
+function firstFreeFrom(taken: [Micros, Micros][], from: Micros, duration: Micros): Micros {
+  let s = from
+  for (const [a, b] of [...taken].sort((x, y) => x[0] - y[0])) {
+    if (b <= s) continue
+    if (a >= s + duration) break
+    s = b
+  }
+  return s
 }
 
 /**
- * Plan a seam across tracks: the selected video clips are laid end to end in vertical track
- * order (top row first; within a track, by time), each staying on its own track. The chain
- * starts where the earliest of them starts. Pure: nothing is changed.
+ * Plan a seam for any selection. Selected video clips (non-main) are laid end to end in
+ * vertical track order (top row first; within a track, by time), each staying on its own
+ * track, from where the earliest of them starts. Unselected clips never move: a selected clip
+ * that would land on one goes to the first free spot after it instead. A single selected clip
+ * closes the gap before it on its track. Pure: nothing is changed.
  */
 export function seamPlan(p: Project, ids: readonly string[]): SeamPlan {
   const set = new Set(ids)
@@ -439,32 +452,36 @@ export function seamPlan(p: Project, ids: readonly string[]): SeamPlan {
   const row = new Map(p.tracks.map((t, i) => [t.id, i]))
   const video = p.clips.filter((c) => set.has(c.id) && p.tracks[row.get(c.trackId)!]?.kind === 'video')
   const clips = video.filter((c) => c.trackId !== main.id).sort((a, b) => row.get(a.trackId)! - row.get(b.trackId)! || a.start - b.start)
-  const plan: SeamPlan = { moves: new Map(), clips, tracks: new Set(clips.map((c) => c.trackId)).size, skippedMain: video.length - clips.length, blocked: null }
+  const plan: SeamPlan = { moves: new Map(), clips, tracks: new Set(clips.map((c) => c.trackId)).size, skippedMain: video.length - clips.length, detoured: 0 }
   if (!clips.length) return plan
-  let cursor = Math.min(...clips.map((c) => c.start))
-  const dest = new Map<string, Micros>()
+  // What each track already holds that won't move: its unselected clips.
+  const taken = new Map<string, [Micros, Micros][]>()
   for (const c of clips) {
-    dest.set(c.id, cursor)
-    cursor += c.duration
-  }
-  // Unselected clips on the same tracks must not end up overlapped.
-  for (const c of clips) {
-    const s = dest.get(c.id)!
-    const e = s + c.duration
-    const hit = p.clips.find((o) => o.trackId === c.trackId && !set.has(o.id) && o.start < e && clipEnd(o) > s)
-    if (hit) {
-      plan.blocked = p.tracks[row.get(c.trackId)!]
-      return plan
+    if (!taken.has(c.trackId)) {
+      taken.set(c.trackId, p.clips.filter((o) => o.trackId === c.trackId && !set.has(o.id)).map((o) => [o.start, clipEnd(o)]))
     }
   }
-  for (const c of clips) if (dest.get(c.id) !== c.start) plan.moves.set(c.id, dest.get(c.id)!)
+  let cursor = Math.min(...clips.map((c) => c.start))
+  if (clips.length === 1) {
+    // Up against the clip before it; space before a track's first clip stays, as in closeGaps.
+    const before = taken.get(clips[0].trackId)!.map(([, e]) => e).filter((e) => e <= clips[0].start)
+    if (before.length) cursor = Math.max(...before)
+  }
+  for (const c of clips) {
+    const track = taken.get(c.trackId)!
+    const s = firstFreeFrom(track, cursor, c.duration)
+    if (s !== cursor) plan.detoured++
+    track.push([s, s + c.duration])
+    if (s !== c.start) plan.moves.set(c.id, s)
+    cursor = s + c.duration
+  }
   return plan
 }
 
 /** Apply a seam plan (see seamPlan). Returns the number of clips moved. */
 export function seamAcrossTracks(p: Project, ids: readonly string[]): number {
   const plan = seamPlan(p, ids)
-  if (plan.blocked || !plan.moves.size) return 0
+  if (!plan.moves.size) return 0
   for (const c of p.clips) {
     const to = plan.moves.get(c.id)
     if (to != null) c.start = to

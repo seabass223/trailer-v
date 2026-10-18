@@ -41,10 +41,10 @@ export function Toolbar() {
   // A string (not an object) so the selector result is stable between renders.
   const seam = useEditor((s) => seamState(s.project, s.selection))
   const [seamKind, seamArg] = seam.split(/:(.*)/)
+  const one = seamArg === '1'
   const seamLabel =
-    seamKind === 'seam' ? `Seam ${seamArg} selected clips, top track first` :
-    seamKind === 'seamed' ? 'Selected clips are already seamed' :
-    seamKind === 'blocked' ? `Can't seam: "${seamArg}" has another clip in the way` :
+    seamKind === 'seam' ? (one ? 'Close the gap before the selected clip' : `Seam ${seamArg} selected clips, top track first`) :
+    seamKind === 'seamed' ? (one ? 'No gap before the selected clip' : 'Selected clips are already seamed') :
     seamKind === 'gaps' ? 'Close gaps between video clips' : 'No gaps between video clips'
 
   return (

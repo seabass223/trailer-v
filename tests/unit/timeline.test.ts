@@ -305,7 +305,7 @@ describe('seam across tracks', () => {
 
     const plan = seamPlan(p, p.clips.map((x) => x.id)) // Ctrl+A
     expect(plan.clips.map((x) => x.name)).toEqual(['a', 'b', 'c'])
-    expect([plan.tracks, plan.skippedMain, plan.blocked]).toEqual([3, 1, null])
+    expect([plan.tracks, plan.skippedMain, plan.detoured]).toEqual([3, 1, 0])
 
     expect(seamAcrossTracks(p, p.clips.map((x) => x.id))).toBe(3)
     expect([a, b, c].map((x) => [x.trackId, x.start / S])).toEqual([[top, 1], [mid, 3], [low, 6]])
@@ -328,7 +328,7 @@ describe('seam across tracks', () => {
     expect(p.transitions).toHaveLength(1)
   })
 
-  it('refuses when an unselected clip is in the way, changing nothing', () => {
+  it('goes past an unselected clip in the way instead of refusing, never moving it', () => {
     const { p, top, mid } = stack()
     const a = video(p, 'a', 4)
     const b = video(p, 'b', 2)
@@ -336,10 +336,44 @@ describe('seam across tracks', () => {
     addClip(p, a, top, 0)
     addClip(p, b, mid, 20 * S)
     addClip(p, x, mid, 5 * S) // b would land at 4-6, on top of x
-    const plan = seamPlan(p, [a.id, b.id])
-    expect(plan.blocked?.id).toBe(mid)
-    expect(seamAcrossTracks(p, [a.id, b.id])).toBe(0)
-    expect(b.start).toBe(20 * S)
+    expect(seamPlan(p, [a.id, b.id]).detoured).toBe(1)
+    expect(seamAcrossTracks(p, [a.id, b.id])).toBe(1)
+    expect([a.start, x.start, b.start]).toEqual([0, 5 * S, 7 * S]) // up against x
+  })
+
+  it('works on any partial selection; unselected clips stay put', () => {
+    const { p, top, mid } = stack()
+    // Two "sections" on two tracks; only the second section is selected.
+    const [a1, a2, b1, b2] = [video(p, 'a1', 2), video(p, 'a2', 2), video(p, 'b1', 2), video(p, 'b2', 2)]
+    addClip(p, a1, top, 0)
+    addClip(p, b1, mid, 3 * S)
+    addClip(p, a2, top, 10 * S)
+    addClip(p, b2, mid, 20 * S)
+    expect(seamAcrossTracks(p, [a2.id, b2.id])).toBe(1)
+    expect([a1, b1, a2, b2].map((c) => c.start / S)).toEqual([0, 3, 10, 12])
+    // Selecting across the sections chains them all, still without touching anything else.
+    const c = video(p, 'c', 1)
+    addClip(p, c, mid, 30 * S)
+    expect(seamAcrossTracks(p, [a1.id, b1.id, b2.id])).toBe(2)
+    expect([a1, b1, b2, a2, c].map((x) => x.start / S)).toEqual([0, 2, 4, 10, 30])
+  })
+
+  it('closes the gap before a single selected clip on its own track', () => {
+    const { p, mid } = stack()
+    const [a, b, c] = [video(p, 'a', 2), video(p, 'b', 2), video(p, 'c', 2)]
+    addClip(p, a, mid, 1 * S)
+    addClip(p, b, mid, 5 * S)
+    addClip(p, c, mid, 10 * S)
+    expect(seamPlan(p, [a.id]).moves.size).toBe(0) // space before a track's first clip stays
+    expect(seamAcrossTracks(p, [c.id])).toBe(1)
+    expect([a, b, c].map((x) => x.start / S)).toEqual([1, 5, 7])
+    expect(seamAcrossTracks(p, [b.id])).toBe(1)
+    expect([a, b, c].map((x) => x.start / S)).toEqual([1, 3, 7])
+    // A selected main-track clip alongside doesn't count: still a single upper-track clip.
+    const m = video(p, 'm', 4)
+    addClip(p, m, mainTrack(p).id, 0)
+    expect(seamAcrossTracks(p, [c.id, m.id])).toBe(1)
+    expect(c.start).toBe(5 * S)
   })
 })
 

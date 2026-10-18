@@ -124,3 +124,73 @@ test('Ctrl+A then seam: clips on 10 video tracks chain top to bottom, each on it
     await h.app.close()
   }
 })
+
+test('seam a partial selection past unselected clips; one selected clip closes the gap before it', async () => {
+  const p = newProject('Partial seam', { aspect: '16:9', tier: '1080p', width: 1920, height: 1080, fps: 30, background: '#000000', historyDepth: 200 }, FIXTURES)
+  const main = mainTrack(p).id
+  const mid = insertTrack(p, 'video').id
+  const top = insertTrack(p, 'video').id
+  const v = (name: string, track: string, dur: number) =>
+    baseClip({ kind: 'video', name, trackId: track, source: join(FIXTURES, 'mountains.mp4'), duration: dur * S, sourceDuration: 8 * S, mediaWidth: 1920, mediaHeight: 1080, hasAudio: true })
+  addClip(p, v('main', main, 6), main, 0)
+  const a = v('a', top, 2)
+  const x = v('x', mid, 2) // unselected, sits where b would land
+  const b = v('b', mid, 2)
+  const y = v('y', top, 2) // unselected, never moves
+  addClip(p, a, top, 1 * S)
+  addClip(p, x, mid, 3.5 * S)
+  addClip(p, b, mid, 9 * S)
+  addClip(p, y, top, 14 * S)
+
+  const h = await launch()
+  try {
+    const dir = join(h.dataDir, 'Projects')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${p.id}.tvproj`), JSON.stringify(p))
+    await h.page.reload()
+    const page = h.page
+    await page.getByText('Partial seam').first().click()
+    await page.waitForTimeout(1200)
+    const starts = () =>
+      page.evaluate(() => {
+        const s = (window as any).__trailer.store.getState().project
+        return Object.fromEntries(s.clips.map((c: any) => [c.name, c.start / 1e6]))
+      })
+    // Click a clip above its middle (the volume line runs through the middle).
+    const pick = async (id: string, add = false) => {
+      const box = (await page.locator(`[data-clip="${id}"]`).boundingBox())!
+      if (add) await page.keyboard.down('Control')
+      await page.mouse.click(box.x + box.width / 2, box.y + 12)
+      if (add) await page.keyboard.up('Control')
+    }
+
+    // Select a and b (not x, not y): the seam works, b goes past x instead of refusing.
+    await pick(a.id)
+    await pick(b.id, true)
+    const seam = page.getByRole('button', { name: 'Seam 2 selected clips, top track first' })
+    await expect(seam).toBeEnabled()
+    await seam.click()
+    expect(await starts()).toEqual({ main: 0, a: 1, x: 3.5, b: 5.5, y: 14 })
+    await expect(page.getByText(/Seamed 2 clips across 2 tracks \(1 went past a clip in the way\)/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Selected clips are already seamed' })).toBeDisabled()
+
+    // A single selected clip closes the gap before it, on its own track only.
+    await pick(y.id)
+    const one = page.getByRole('button', { name: 'Close the gap before the selected clip' })
+    await expect(one).toBeEnabled()
+    await page.screenshot({ path: join(SHOTS, 'seam-03-single.png') })
+    await one.click()
+    expect(await starts()).toEqual({ main: 0, a: 1, x: 3.5, b: 5.5, y: 3 })
+    await expect(page.getByRole('button', { name: 'No gap before the selected clip' })).toBeDisabled()
+
+    // Each was one undo step.
+    await page.keyboard.press('Control+z')
+    expect((await starts()).y).toBe(14)
+    await page.keyboard.press('Control+z')
+    expect(await starts()).toEqual({ main: 0, a: 1, x: 3.5, b: 9, y: 14 })
+  } finally {
+    const errs = h.logs.filter((l) => /\[(error|pageerror)\]/.test(l))
+    if (errs.length) console.log(errs.join('\n'))
+    await h.app.close()
+  }
+})

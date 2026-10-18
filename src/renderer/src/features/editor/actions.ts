@@ -230,7 +230,7 @@ export function removeTrack(trackId: string): void {
 
 /**
  * What the seam button would do now, as a stable string for UI selectors:
- * `seam:<n>` (chain the selection), `seamed`, `blocked:<track name>`, `gaps`, or `none`.
+ * `seam:<n>` (seam the n selected clips), `seamed:<n>` (already are), `gaps`, or `none`.
  */
 let seamMemo: { p: Project | null; selection: readonly string[]; value: string } | null = null
 
@@ -245,37 +245,37 @@ export function seamState(p: Project | null, selection: readonly string[]): stri
 function computeSeamState(p: Project | null, selection: readonly string[]): string {
   if (!p) return 'none'
   const plan = seamPlan(p, selection)
-  if (plan.clips.length >= 2) {
-    if (plan.blocked) return `blocked:${plan.blocked.name}`
-    return plan.moves.size ? `seam:${plan.clips.length}` : 'seamed'
-  }
+  if (plan.clips.length) return `${plan.moves.size ? 'seam' : 'seamed'}:${plan.clips.length}`
   return tracksWithGaps(p).length ? 'gaps' : 'none'
 }
 
 /**
- * Seam button / G: with 2+ video clips selected, chain them end to end in top-to-bottom track
- * order (each stays on its own track); otherwise close gaps within every video track.
+ * Seam button / G: whatever is selected, close the gaps between the selected video clips,
+ * chaining them end to end in top-to-bottom track order (each stays on its own track); one
+ * selected clip closes the gap before it. With no upper-track video clip selected, close gaps
+ * within every video track.
  */
 export function seamVideo(): void {
   const p = project()
   if (!p) return
   const selection = useEditor.getState().selection
   const plan = seamPlan(p, selection)
-  if (plan.clips.length < 2) return closeVideoGaps()
-  if (plan.blocked) {
-    toast.error(`Can't seam: "${plan.blocked.name}" has another clip in the way`, { duration: 2500 })
-    return
-  }
+  const n = plan.clips.length
+  if (!n) return closeVideoGaps()
   if (!plan.moves.size) {
-    toast('Selected clips are already seamed', { duration: 1500 })
+    toast(n === 1 ? 'No gap before this clip' : 'Selected clips are already seamed', { duration: 1500 })
     return
   }
-  commit(`Seam ${plan.clips.length} clips`, (d) => {
+  commit(n === 1 ? `Close gap before ${plan.clips[0].name}` : `Seam ${n} clips`, (d) => {
     seamAcrossTracks(d, selection)
   })
+  if (n === 1) return void toast.success('Closed the gap', { duration: 1500 })
   const across = plan.tracks > 1 ? ` across ${plan.tracks} tracks` : ''
-  const main = plan.skippedMain ? ' (main-track clips stay put)' : ''
-  toast.success(`Seamed ${plan.clips.length} clips${across}${main}`, { duration: 2000 })
+  const notes = [
+    plan.detoured && `${plan.detoured} went past ${plan.detoured === 1 ? 'a clip' : 'clips'} in the way`,
+    plan.skippedMain && 'main-track clips stay put',
+  ].filter(Boolean)
+  toast.success(`Seamed ${n} clips${across}${notes.length ? ` (${notes.join('; ')})` : ''}`, { duration: 2500 })
 }
 
 /** Butt video clips together (all video tracks, or one), keeping transitions; one undo step. */
