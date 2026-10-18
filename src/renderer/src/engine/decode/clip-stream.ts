@@ -3,11 +3,20 @@
  * the requested source time:
  *  - playback: decodes ahead (lookahead frames), frames are released as soon as they're stale;
  *  - scrubbing: "latest target wins" — re-seeks only when the target leaves what's buffered
- *    or lands in a GOP the decoder hasn't been fed yet, otherwise decodes forward.
+ *    or lands in a GOP the decoder hasn't been fed yet, otherwise decodes forward;
+ *  - pre-roll (background): decodes up to where a clip is about to show, yielding to the
+ *    streams on screen so it never costs them a frame.
  * Hardware decoders stall when apps hold too many frames, so the window is kept small.
  */
 import { isDisposable } from './disposable'
 import type { VideoSource } from './sources'
+
+/**
+ * Decodes a background stream may submit per `want()` (once per rendered frame). A burst of
+ * them backs up the GPU process and stalls the frames on screen (measured: ~200 ms with the
+ * hardware decoder under load), so pre-roll is paced instead.
+ */
+const BACKGROUND_DECODES_PER_WANT = 2
 
 export class ClipStream {
   readonly clipId: string
@@ -22,9 +31,17 @@ export class ClipStream {
   private runStart = -1
   private decodedUpTo = -1
   private fedUpTo = -1
+  /** Every packet of the current run is fed (the source ends: nothing more can come). */
+  private fedAll = false
+  /** Pre-rolling a picture that isn't on screen yet. */
+  private background = false
+  /** Decodes left before the next `want()` (background only). */
+  private budget = 0
   private evaluating = false
   private wake: (() => void) | null = null
   lastUsed = performance.now()
+  /** Set while a stream on screen is filling its lookahead: a background stream stops feeding. */
+  hold = false
   error: string | null = null
   /** Called whenever a new frame is decoded (the engine re-renders paused frames). */
   onFrame: (() => void) | null = null
@@ -44,7 +61,7 @@ export class ClipStream {
 
   describe(): string {
     const ts = this.frames.map((f) => Math.round(f.timestamp / 1000)).join(',')
-    return `${this.clipId.slice(0, 4)} target=${Math.round(this.target / 1000)}ms frames=[${ts}] decodedUpTo=${Math.round(this.decodedUpTo / 1000)} fedUpTo=${Math.round(this.fedUpTo / 1000)} q=${this.decoder?.decodeQueueSize ?? '-'} seeks=${this.seeks} skipped=${this.skipped} la=${this.lookahead}${this.error ? ' err=' + this.error : ''}`
+    return `${this.clipId.slice(0, 4)} target=${Math.round(this.target / 1000)}ms frames=[${ts}] decodedUpTo=${Math.round(this.decodedUpTo / 1000)} fedUpTo=${Math.round(this.fedUpTo / 1000)} q=${this.decoder?.decodeQueueSize ?? '-'} seeks=${this.seeks} skipped=${this.skipped} la=${this.lookahead}${this.background ? ' bg' : ''}${this.hold ? ' hold' : ''}${this.error ? ' err=' + this.error : ''}`
   }
 
   private makeDecoder(): VideoDecoder {
@@ -107,10 +124,20 @@ export class ClipStream {
     return Math.min(frames, 6)
   }
 
-  /** Ask for source time `t` (µs). Non-blocking. `lookahead` is in 30 fps-equivalent frames. */
-  want(t: number, lookahead: number): void {
+  /** Still filling its lookahead for `t` (pre-roll for other clips waits until it's full). */
+  filling(t: number): boolean {
+    return !this.error && !this.fedAll && this.ahead(t) < this.lookahead - 1
+  }
+
+  /**
+   * Ask for source time `t` (µs). Non-blocking. `lookahead` is in 30 fps-equivalent frames.
+   * `background`: pre-roll for a picture not on screen yet.
+   */
+  want(t: number, lookahead: number, background = false): void {
     this.target = t
     this.lookahead = this.scaled(lookahead)
+    this.background = background
+    this.budget = BACKGROUND_DECODES_PER_WANT
     this.lastUsed = performance.now()
     this.prune()
     if (!this.evaluating) void this.evaluate()
@@ -184,6 +211,7 @@ export class ClipStream {
     this.frames = []
     this.decodedUpTo = -1
     this.fedUpTo = -1
+    this.fedAll = false
     this.runStart = t
     if (!this.decoder || this.decoder.state === 'closed') this.decoder = this.makeDecoder()
     else this.decoder.reset()
@@ -194,10 +222,16 @@ export class ClipStream {
 
   private paused(): boolean {
     const d = this.decoder!
-    // Catching up to a target (seek into a long GOP): keep the hardware queue deep for
-    // throughput. Otherwise stay shallow so the decoder reacts quickly to new targets.
-    const behind = this.target > this.decodedUpTo + 2 * this.src.frameDuration
-    if (d.decodeQueueSize > (behind ? 16 : 3)) return true
+    if (this.background) {
+      // Pre-roll shares the hardware decoder with the pictures on screen: it only uses what
+      // they leave idle, a few frames at a time.
+      if (this.hold || this.budget <= 0 || d.decodeQueueSize > 2) return true
+    } else {
+      // Catching up to a target (seek into a long GOP): keep the hardware queue deep for
+      // throughput. Otherwise stay shallow so the decoder reacts quickly to new targets.
+      const behind = this.target > this.decodedUpTo + 2 * this.src.frameDuration
+      if (d.decodeQueueSize > (behind ? 16 : 3)) return true
+    }
     return this.futureFrames() >= this.lookahead || this.frames.length >= this.lookahead + 2
   }
 
@@ -215,11 +249,12 @@ export class ClipStream {
         }
         if (g !== this.gen || this.decoder?.state !== 'configured') return
         this.fedUpTo = Math.max(this.fedUpTo, packet.microsecondTimestamp)
-        // Seeking deep into a long GOP while paused: frames nothing references and that land
-        // before the target never reach the screen, so don't decode them. Never during playback:
-        // gaps make hardware decoders hold output longer (measured: stutter at 4K60).
+        // Seeking deep into a long GOP while paused, or pre-rolling a clip that shows there:
+        // frames nothing references and that land before the target never reach the screen,
+        // so don't decode them. Never for a picture on screen during playback: gaps make
+        // hardware decoders hold output longer (measured: stutter at 4K60).
         if (
-          this.lookahead <= 1 &&
+          (this.lookahead <= 1 || this.background) &&
           packet.type === 'delta' &&
           packet.microsecondTimestamp < this.target - this.src.frameDuration &&
           this.target > this.decodedUpTo + 10 * this.src.frameDuration &&
@@ -229,8 +264,12 @@ export class ClipStream {
           continue
         }
         this.decoder.decode(packet.toEncodedVideoChunk())
+        this.budget--
       }
-      if (g === this.gen && this.decoder?.state === 'configured') await this.decoder.flush()
+      if (g === this.gen && this.decoder?.state === 'configured') {
+        this.fedAll = true
+        await this.decoder.flush()
+      }
     } catch (e) {
       if (g === this.gen && !(e instanceof DOMException && e.name === 'AbortError')) this.error = String(e)
     }

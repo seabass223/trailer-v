@@ -32,6 +32,10 @@ export interface DrawResult {
 }
 
 const PREROLL_US = 1_000_000
+/** Furthest ahead a clip about to show is pre-rolled (deep in a long GOP it needs a head start). */
+const MAX_PREROLL_US = 4_000_000
+/** Decode time budgeted per 1080p frame when sizing a pre-roll: ~4x an idle RTX 3060, for a busy GPU. */
+const DECODE_US_PER_1080P_FRAME = 8_000
 
 export class FrameRenderer {
   readonly compositor: Compositor
@@ -42,6 +46,8 @@ export class FrameRenderer {
   private texts = new Map<string, TextEntry>()
   /** Sources that failed to open (offline/unsupported). */
   private failed = new Set<string>()
+  /** Pre-roll lead per clip and source time it shows at (see `prerollLead`). */
+  private leads = new Map<string, Micros>()
   /** Render pixels per logical pixel; text is rasterized at this density. */
   textScale = 1
   hiddenClip: string | null = null
@@ -56,6 +62,7 @@ export class FrameRenderer {
 
   setProject(p: Project): void {
     this.project = p
+    this.leads.clear()
     // Give previously failed media another chance (the file may be back on disk).
     if (this.failed.size) {
       for (const c of p.clips) {
@@ -156,25 +163,70 @@ export class FrameRenderer {
   }
 
   /**
+   * How long before it shows a clip has to start decoding: a second, plus the time to decode
+   * up to it from the keyframe before it (seconds, deep in a long GOP). A clip that still has a
+   * decoder (covered a moment ago) keeps it and decodes ahead from where it is.
+   */
+  private prerollLead(l: VisualLayer): Micros {
+    const c = l.clip
+    if (this.streams.has(c.id)) return MAX_PREROLL_US
+    const key = `${c.id}|${c.source}|${l.sourceTime}`
+    const known = this.leads.get(key)
+    if (known !== undefined) return known
+    this.leads.set(key, PREROLL_US)
+    void videoSource(c.source!)
+      .then(async (src) => {
+        const k = await src.sink.getKeyPacket(l.sourceTime / 1e6, { metadataOnly: true })
+        const frames = Math.max(0, l.sourceTime - (k?.microsecondTimestamp ?? 0)) / src.frameDuration
+        const px = (src.config.codedWidth ?? 1920) * (src.config.codedHeight ?? 1080)
+        const decode = frames * DECODE_US_PER_1080P_FRAME * Math.max(1, px / (1920 * 1080))
+        this.leads.set(key, Math.min(MAX_PREROLL_US, PREROLL_US + decode))
+      })
+      .catch(() => {})
+    return PREROLL_US
+  }
+
+  /**
    * Point decoders at time t, and while playing pre-roll clips about to be shown (starting
    * soon, or revealed when a video track above them ends or fades out). Covered clips get no
-   * decoder.
+   * decoder. Pre-roll decodes in the background: only while every picture on screen has its
+   * lookahead decoded.
    */
   prepare(t: Micros, playing: boolean): void {
     const p = this.project
     if (!p) return
     const lookahead = playing ? this.playLookahead : 1
+    const seen = new Set<string>()
     const wanted = new Set<string>()
-    const want = (plan: FramePlan) => {
+    const shown: [ClipStream, Micros][] = []
+    const background: ClipStream[] = []
+    // Each video clip once, where it shows first: now, or at the next change that shows it.
+    const each = (plan: FramePlan, fn: (l: VisualLayer) => void) => {
       for (const l of [...plan.base, ...plan.standby]) {
         const c = l.clip
-        if (c.kind !== 'video' || !c.source || wanted.has(c.id)) continue
-        wanted.add(c.id)
-        this.stream(c)?.want(l.sourceTime, lookahead)
+        if (c.kind !== 'video' || !c.source || seen.has(c.id)) continue
+        seen.add(c.id)
+        fn(l)
       }
     }
-    want(framePlan(p, t))
-    if (playing) for (const at of videoChangesBetween(p, t, t + PREROLL_US)) want(framePlan(p, at))
+    const want = (l: VisualLayer, preroll: boolean) => {
+      wanted.add(l.clip.id)
+      const s = this.stream(l.clip)
+      if (!s) return
+      s.want(l.sourceTime, lookahead, preroll)
+      if (preroll) background.push(s)
+      else shown.push([s, l.sourceTime])
+    }
+    each(framePlan(p, t), (l) => want(l, false))
+    if (playing) {
+      for (const at of videoChangesBetween(p, t, t + MAX_PREROLL_US)) {
+        each(framePlan(p, at), (l) => {
+          if (at - t <= this.prerollLead(l)) want(l, true)
+        })
+      }
+      const busy = shown.some(([s, st]) => s.filling(st))
+      for (const s of background) s.hold = busy
+    }
     // Free decoders that are neither visible nor about to be.
     for (const [id, s] of this.ready) {
       if (!wanted.has(id) && performance.now() - s.lastUsed > 1500) this.dropStream(id, this.streams.get(id)!)
