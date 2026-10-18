@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { ExportDialog } from '@/features/export/ExportDialog'
+import { GenerateAudioDialog } from '@/features/generate/GenerateAudioDialog'
+import { useGenerateJobs } from '@/features/generate/jobs'
 import { PerfHud } from '@/features/hud/PerfHud'
 import { InspectorPanel } from '@/features/inspector/InspectorPanel'
 import { LibraryPanel } from '@/features/library/LibraryPanel'
@@ -19,6 +21,7 @@ export function Editor({ onHome, onOpen }: { onHome: () => void; onOpen: (id: st
   const hud = useEditor((s) => s.hud)
   useLibrary()
   useShortcuts()
+  useGenerateJobs()
 
   useEffect(() => {
     const p = useEditor.getState().project
@@ -57,6 +60,7 @@ export function Editor({ onHome, onOpen }: { onHome: () => void; onOpen: (id: st
         </ResizablePanel>
       </ResizablePanelGroup>
       <ExportDialog />
+      <GenerateAudioDialog />
       <ShortcutsDialog />
       <Prewarm />
       {hud && <PerfHud />}

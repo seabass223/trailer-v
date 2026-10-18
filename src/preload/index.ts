@@ -37,6 +37,21 @@ const api: TrailerApi = {
     },
   },
   shell: { showItem: (path) => ipcRenderer.invoke('shell:showItem', path) },
+  generate: {
+    openView: (folder) => ipcRenderer.invoke('generate:openView', folder),
+    closeView: (viewId) => ipcRenderer.send('generate:closeView', viewId),
+    callTool: (viewId, name, args) => ipcRenderer.invoke('generate:callTool', viewId, name, args),
+    readResource: (uri) => ipcRenderer.invoke('generate:readResource', uri),
+    adopt: (viewId, handle) => ipcRenderer.send('generate:adopt', viewId, handle),
+    deliverNow: (jobId) => ipcRenderer.send('generate:deliverNow', jobId),
+    cancel: (jobId) => ipcRenderer.invoke('generate:cancel', jobId),
+    openLink: (url) => ipcRenderer.invoke('generate:openLink', url),
+    onEvent: (cb) => {
+      const listener = (_e: unknown, ev: Parameters<typeof cb>[0]) => cb(ev)
+      ipcRenderer.on('generate:event', listener)
+      return () => ipcRenderer.removeListener('generate:event', listener)
+    },
+  },
   mediaUrl: (path) => `media://local/${encodeURIComponent(path)}`,
 }
 

@@ -311,8 +311,9 @@ export function Timeline() {
       <Toolbar />
       <div ref={scrollRef} className="relative min-h-0 flex-1 overflow-auto overscroll-none">
         <div className="relative" style={{ width: header + contentW, minHeight: '100%', '--header-w': `${header}px` } as CSSProperties}>
-          {/* Ruler row */}
-          <div className="sticky top-0 z-30 flex border-b border-track-divider bg-timeline" style={{ height: RULER_H }}>
+          {/* Ruler row: above the sticky track headers (z-30), so "+ Track" in its corner stays
+              visible and clickable however far the track list is scrolled. */}
+          <div className="sticky top-0 z-50 flex border-b border-track-divider bg-timeline" style={{ height: RULER_H }}>
             <div className="sticky left-0 z-40 flex shrink-0 items-center bg-timeline pl-2" style={{ width: header }}>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>

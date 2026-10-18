@@ -11,6 +11,7 @@ import {
   createProject, duplicateProject, listProjects, readProject, removeProject, renameProject, saveProject, savePoster,
 } from './projects'
 import { handleProtocols, registerSchemes } from './protocols'
+import { registerGenerateIpc } from './yue2'
 
 // --- GPU / scheduling: this app lives on the RTX, never throttle it. ---
 app.commandLine.appendSwitch('force_high_performance_gpu')
@@ -109,6 +110,7 @@ function registerIpc(): void {
   ipcMain.handle('shell:showItem', (_e, path: string) => shell.showItemInFolder(path))
 
   registerExportIpc()
+  registerGenerateIpc()
 }
 
 app.whenReady().then(() => {

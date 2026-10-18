@@ -4,29 +4,43 @@ import { useEditor } from '@/state/store'
 import { beginScrub } from './interactions'
 import { RULER_H, view } from './view'
 
-/** Playhead line + head, moved by transform from the clock (never through React state). */
+/**
+ * Playhead line + head, moved by transform from the clock (never through React state).
+ * It sits above the ruler, so it hides itself while scrolled under the track-name column
+ * instead of drawing over the headers and the "+ Track" button.
+ */
 export function Playhead() {
   const line = useRef<HTMLDivElement>(null)
   const pxPerSec = useEditor((s) => s.pxPerSec)
   const header = useEditor((s) => s.headerW)
 
-  useEffect(
-    () =>
-      engine().subscribe((t, playing) => {
-        const x = header + (t / 1e6) * pxPerSec
-        if (line.current) line.current.style.transform = `translateX(${x}px)`
-        const sc = view.scroller
-        if (sc && playing) {
-          // Page-follow while playing.
-          const vx = x - sc.scrollLeft
-          if (vx > sc.clientWidth - 40 || vx < header) sc.scrollLeft = Math.max(0, x - header - 40)
-        }
-      }),
-    [pxPerSec, header],
-  )
+  useEffect(() => {
+    let x = header
+    const clip = () => {
+      const sc = view.scroller
+      if (line.current && sc) line.current.style.visibility = x - sc.scrollLeft < header - 1 ? 'hidden' : 'visible'
+    }
+    const off = engine().subscribe((t, playing) => {
+      x = header + (t / 1e6) * pxPerSec
+      if (line.current) line.current.style.transform = `translateX(${x}px)`
+      const sc = view.scroller
+      if (sc && playing) {
+        // Page-follow while playing.
+        const vx = x - sc.scrollLeft
+        if (vx > sc.clientWidth - 40 || vx < header) sc.scrollLeft = Math.max(0, x - header - 40)
+      }
+      clip()
+    })
+    const sc = view.scroller
+    sc?.addEventListener('scroll', clip, { passive: true })
+    return () => {
+      off()
+      sc?.removeEventListener('scroll', clip)
+    }
+  }, [pxPerSec, header])
 
   return (
-    <div ref={line} className="pointer-events-none absolute left-0 top-0 z-40 h-full w-0">
+    <div ref={line} className="pointer-events-none absolute left-0 top-0 z-[60] h-full w-0">
       <div className="absolute bottom-0 left-[-1px] top-[6px] w-[2px] bg-white/90 shadow-[0_0_4px_rgba(0,0,0,.6)]" />
       <div
         className="pointer-events-auto sticky top-0 -ml-[7px] cursor-ew-resize"

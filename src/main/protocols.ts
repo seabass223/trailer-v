@@ -6,6 +6,7 @@ import { Readable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { SUPPORTED_EXTENSIONS } from '@shared/presets'
 import { projectsDir } from './projects'
+import { viewHtml } from './yue2'
 
 export function registerSchemes(): void {
   protocol.registerSchemesAsPrivileged([
@@ -14,6 +15,8 @@ export function registerSchemes(): void {
       scheme: 'media',
       privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, bypassCSP: true },
     },
+    // MCP Apps Views (YuE2's micro UI), framed with sandbox="allow-scripts".
+    { scheme: 'mcpview', privileges: { standard: true, secure: true } },
   ])
 }
 
@@ -92,7 +95,29 @@ async function handleApp(req: Request, root: string): Promise<Response> {
   return new Response(res.body, { status: res.status, headers })
 }
 
+/**
+ * mcpview://view/<viewId>: the View HTML under the MCP Apps default policy (no network; inline
+ * script/style; data: media for its player). Served here rather than via srcdoc, which would
+ * inherit the editor's CSP and block the View's inline scripts.
+ */
+function handleView(req: Request): Response {
+  const html = viewHtml(new URL(req.url).pathname.slice(1))
+  if (!html) return new Response('Not found', { status: 404 })
+  return new Response(html, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Security-Policy':
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data:; connect-src 'none'",
+      // The editor is cross-origin isolated (COEP require-corp), so frames must opt in too.
+      'Cross-Origin-Embedder-Policy': 'require-corp',
+      'Cross-Origin-Resource-Policy': 'cross-origin',
+      'Cache-Control': 'no-store',
+    },
+  })
+}
+
 export function handleProtocols(rendererRoot: string): void {
   protocol.handle('media', handleMedia)
+  protocol.handle('mcpview', handleView)
   protocol.handle('app', (req) => handleApp(req, rendererRoot))
 }

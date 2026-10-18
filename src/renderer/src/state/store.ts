@@ -42,6 +42,7 @@ export interface EditorState {
   hud: boolean
   exportOpen: boolean
   shortcutsOpen: boolean
+  generateOpen: boolean
   editingTextId: string | null
 }
 
@@ -76,6 +77,7 @@ export const useEditor = create<EditorState>(() => ({
   hud: false,
   exportOpen: false,
   shortcutsOpen: false,
+  generateOpen: false,
   editingTextId: null,
 }))
 
