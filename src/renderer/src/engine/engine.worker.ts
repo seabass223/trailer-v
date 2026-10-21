@@ -125,29 +125,38 @@ async function init(msg: Extract<EngineInbound, { type: 'init' }>): Promise<void
 }
 
 /**
- * Project thumbnail. Uses its own short-lived renderer + decoders so it never disturbs the
- * preview's decoders (a poster seek mid-playback would cause visible catch-up drops).
+ * Off-screen frame: project thumbnails and MCP snapshots. Uses its own short-lived renderer +
+ * decoders so it never disturbs the preview's decoders (a poster seek mid-playback would cause
+ * visible catch-up drops).
  */
-async function poster(time: number, id: number): Promise<void> {
-  if (!project || isPlaying(clock)) return post({ type: 'poster', id, jpeg: null })
-  const W = 480
-  const H = Math.round((W * project.settings.height) / project.settings.width)
+async function poster(msg: Extract<EngineInbound, { type: 'poster' }>): Promise<void> {
+  const { time, id } = msg
+  if (!project || isPlaying(clock)) return post({ type: 'poster', id, image: null, width: 0, height: 0, complete: false })
+  const S = project.settings
+  // Even sizes, never larger than the project frame.
+  const W = Math.max(16, Math.min(S.width, Math.round((msg.width ?? 480) / 2) * 2))
+  const H = Math.max(2, Math.round((W * S.height) / S.width / 2) * 2)
   const off = new OffscreenCanvas(W, H)
   const pctx = off.getContext('webgpu')!
   pctx.configure({ device, format: renderer.compositor.format, alphaMode: 'opaque' })
   const r = new FrameRenderer(new Compositor(device, renderer.compositor.format))
   try {
-    r.textScale = W / project.settings.width
+    r.textScale = W / S.width
     r.setProject(project)
-    for (let i = 0; i < 80; i++) {
+    // Big snapshots may wait on a cold decoder for longer than a thumbnail would.
+    const until = performance.now() + (W > 480 ? 8000 : 2000)
+    let complete = false
+    while (!complete) {
       r.prepare(time, false)
-      if (r.draw(time, pctx.getCurrentTexture()).complete) break
+      complete = r.draw(time, pctx.getCurrentTexture()).complete
+      if (complete || performance.now() > until) break
       await new Promise((res) => setTimeout(res, 25))
     }
     await device.queue.onSubmittedWorkDone()
-    const blob = await off.convertToBlob({ type: 'image/jpeg', quality: 0.82 })
+    const mime = msg.mime ?? 'image/jpeg'
+    const blob = await off.convertToBlob(mime === 'image/png' ? { type: mime } : { type: mime, quality: msg.quality ?? 0.82 })
     const buf = await blob.arrayBuffer()
-    post({ type: 'poster', id, jpeg: buf }, [buf])
+    post({ type: 'poster', id, image: buf, width: W, height: H, complete }, [buf])
   } finally {
     r.dispose()
     r.compositor.destroy()
@@ -189,7 +198,7 @@ self.onmessage = (e: MessageEvent<EngineInbound>) => {
         dirty = true
         break
       case 'poster':
-        void poster(msg.time, msg.id)
+        void poster(msg)
         break
       case 'preroll':
         // Buffer a few frames per visible clip (GPU may be ramping up from idle), max 300 ms.

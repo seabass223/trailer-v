@@ -75,7 +75,7 @@ function spacing(v: unknown, fontSize: number): number {
 /** CSS `bolder`: the bold mark renders as <strong> inside the textStyle span. */
 const bolder = (w: number): number => (w < 350 ? 400 : w < 550 ? 700 : Math.max(900, w))
 
-function styleFrom(marks: RichNode['marks']): RunStyle {
+export function styleFrom(marks: RichNode['marks']): RunStyle {
   const s = { ...DEFAULT_STYLE }
   let bold = false
   let weight: number | null = null

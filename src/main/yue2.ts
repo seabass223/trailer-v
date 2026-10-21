@@ -71,8 +71,17 @@ async function withClient<T>(fn: (c: Client) => Promise<T>): Promise<T> {
   }
 }
 
+const listeners = new Set<(e: GenEvent) => void>()
+
+/** In-process subscribers (the MCP server) see every job event the editor sees. */
+export function onGenerateEvent(cb: (e: GenEvent) => void): () => void {
+  listeners.add(cb)
+  return () => listeners.delete(cb)
+}
+
 function emit(job: { sender: WebContents }, e: GenEvent): void {
   if (!job.sender.isDestroyed()) job.sender.send('generate:event', e)
+  for (const l of listeners) l(e)
 }
 
 function sc<T>(r: CallToolResult): T {
@@ -86,13 +95,37 @@ function errorOf(r: CallToolResult): { code?: string; message: string } {
 }
 
 function adopt(viewId: string, h: Handle): void {
-  if (!h?.jobId || jobs.has(h.jobId)) return
   const v = views.get(viewId)
-  if (!v) return
-  const job: Job = { handle: h, viewId, folder: v.folder, label: v.label, sender: v.sender }
-  jobs.set(h.jobId, job)
-  emit(job, { type: 'started', jobId: h.jobId, viewId, label: job.label })
+  if (v) begin({ handle: h, viewId, folder: v.folder, label: v.label, sender: v.sender })
+}
+
+function begin(job: Job): void {
+  if (!job.handle?.jobId || jobs.has(job.handle.jobId)) return
+  jobs.set(job.handle.jobId, job)
+  emit(job, { type: 'started', jobId: job.handle.jobId, viewId: job.viewId, label: job.label })
   void track(job)
+}
+
+/** View id used for jobs started without a View (MCP). */
+export const NO_VIEW = 'mcp'
+
+/**
+ * Start a song without the dialog (MCP): same tracking and delivery into `folder`/AI Audio as a
+ * View-started job, and the editor shows its progress toast. Returns the job id.
+ */
+export async function startSong(args: Record<string, unknown>, folder: string, label: string, sender: WebContents): Promise<string> {
+  const start = (await connect(), startTool()!)
+  const r = await withClient((c) => c.callTool({ name: start.name, arguments: args }))
+  if (r.isError) throw new Error(errorOf(r).message)
+  const handle = sc<Handle>(r)
+  if (!handle.jobId) throw new Error('YuE2 Studio returned no job')
+  begin({ handle, viewId: NO_VIEW, folder, label, sender })
+  return handle.jobId
+}
+
+export async function cancelSong(jobId: string): Promise<void> {
+  const job = jobs.get(jobId)
+  if (job) await withClient((c) => c.callTool({ name: job.handle.cancelTool, arguments: { jobId } }))
 }
 
 /** Spec 6.7 step 4: follow the job ourselves; never rely on the View. */
@@ -220,10 +253,7 @@ export function registerGenerateIpc(): void {
   ipcMain.handle('generate:readResource', (_e, uri: string) => withClient((c) => c.readResource({ uri })))
   ipcMain.on('generate:adopt', (_e, viewId: string, h: Handle) => adopt(viewId, h))
   ipcMain.on('generate:deliverNow', (_e, jobId: string) => void deliver(jobId))
-  ipcMain.handle('generate:cancel', async (_e, jobId: string) => {
-    const job = jobs.get(jobId)
-    if (job) await withClient((c) => c.callTool({ name: job.handle.cancelTool, arguments: { jobId } }))
-  })
+  ipcMain.handle('generate:cancel', (_e, jobId: string) => cancelSong(jobId))
   ipcMain.handle('generate:openLink', (_e, url: string) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
   })

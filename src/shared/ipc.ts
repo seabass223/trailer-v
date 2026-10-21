@@ -1,5 +1,13 @@
 import type { EncoderCaps, MediaFile, Project, ProjectSettings, ProjectSummary } from './model'
 
+export interface CopyResult {
+  /** Destination paths that now hold a copy of their source. */
+  copied: string[]
+  /** Sources that weren't copied (skipped at a name clash, or cancelled). */
+  skipped: string[]
+  cancelled: boolean
+}
+
 export interface CreateProjectInput {
   name: string
   settings: ProjectSettings
@@ -59,6 +67,12 @@ export interface TrailerApi {
     scan(folder: string): Promise<MediaFile[]>
     onChanged(cb: (folder: string, files: MediaFile[]) => void): () => void
     readText(path: string): Promise<string>
+    /** Copy files into a folder with a Windows shell copy (progress dialog, Replace/Skip prompt). */
+    copyIn(paths: string[], folder: string): Promise<CopyResult>
+    /** Open a folder in File Explorer. */
+    openFolder(folder: string): Promise<void>
+    /** Disk path of a file dropped from Explorer ('' for files that aren't on disk). */
+    pathForFile(file: File): string
   }
   dialog: {
     pickFolder(defaultPath?: string): Promise<string | null>
@@ -87,6 +101,13 @@ export interface TrailerApi {
     cancel(jobId: string): Promise<void>
     openLink(url: string): Promise<void>
     onEvent(cb: (e: GenEvent) => void): () => void
+  }
+  /** Main-process MCP server → editor calls (see src/main/mcp). */
+  automation: {
+    onCall(cb: (id: number, method: string, params: unknown) => void): () => void
+    reply(id: number, ok: boolean, value: unknown): void
+    /** The editor is listening (sent once per page load). */
+    ready(): void
   }
   mediaUrl(path: string): string
 }

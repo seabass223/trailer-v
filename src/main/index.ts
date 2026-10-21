@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import type { CreateProjectInput } from '@shared/ipc'
 import type { Project } from '@shared/model'
 import { encoderCaps } from './encoder'
@@ -10,7 +10,9 @@ import { scanFolder, watchFolder } from './library'
 import {
   createProject, duplicateProject, listProjects, readProject, removeProject, renameProject, saveProject, savePoster,
 } from './projects'
+import { startMcpServer, stopMcpServer } from './mcp/server'
 import { handleProtocols, registerSchemes } from './protocols'
+import { shellCopy } from './shell-copy'
 import { registerGenerateIpc } from './yue2'
 
 // --- GPU / scheduling: this app lives on the RTX, never throttle it. ---
@@ -55,6 +57,8 @@ function createWindow(): void {
   })
   win.once('ready-to-show', () => win?.show())
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  // A file dropped outside a drop zone must not navigate the editor away to that file.
+  win.webContents.on('will-navigate', (e) => e.preventDefault())
 
   if (!app.isPackaged) {
     // Surface renderer + worker logs in the terminal during development.
@@ -69,6 +73,12 @@ function createWindow(): void {
   } else {
     void win.loadURL('app://bundle/index.html')
   }
+}
+
+async function directory(path: string): Promise<string> {
+  const abs = resolve(path)
+  if (!(await stat(abs).catch(() => null))?.isDirectory()) throw new Error(`Folder not found: ${abs}`)
+  return abs
 }
 
 function registerIpc(): void {
@@ -87,6 +97,16 @@ function registerIpc(): void {
       if (!e.sender.isDestroyed()) e.sender.send('library:changed', folder, next)
     })
     return files
+  })
+  ipcMain.handle('library:copyIn', async (e, sources: string[], folder: string) => {
+    const dir = await directory(folder)
+    const files = (await Promise.all(sources.map(async (p) => ((await stat(p).catch(() => null))?.isFile() ? resolve(p) : null))))
+      .filter((p): p is string => !!p)
+    return shellCopy(files, dir, BrowserWindow.fromWebContents(e.sender))
+  })
+  ipcMain.handle('library:openFolder', async (_e, folder: string) => {
+    const err = await shell.openPath(await directory(folder))
+    if (err) throw new Error(err)
   })
   ipcMain.handle('library:readText', async (_e, path: string) => {
     if (!path.toLowerCase().endsWith('.txt')) throw new Error('Not a text file')
@@ -117,9 +137,12 @@ app.whenReady().then(() => {
   handleProtocols(join(dirname, '../renderer'))
   registerIpc()
   createWindow()
+  // Local MCP endpoint for agents (src/main/mcp/server.ts).
+  startMcpServer(() => win)
   // Warm caches off the critical path.
   void encoderCaps()
   void listFonts()
 })
 
 app.on('window-all-closed', () => app.quit())
+app.on('will-quit', () => stopMcpServer())

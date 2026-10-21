@@ -27,7 +27,7 @@ class EngineClient {
   private listeners = new Set<TickListener>()
   private lastTick = { time: -1, playing: false }
   private loadedSources = new Set<string>()
-  private posterWaiters = new Map<number, (b: ArrayBuffer | null) => void>()
+  private posterWaiters = new Map<number, (r: Snapshot | null) => void>()
   private nextPoster = 1
   adapter = ''
   error: string | null = null
@@ -72,7 +72,7 @@ class EngineClient {
       this.prerollWaiters.get(m.id)?.()
       this.prerollWaiters.delete(m.id)
     } else if (m.type === 'poster') {
-      this.posterWaiters.get(m.id)?.(m.jpeg)
+      this.posterWaiters.get(m.id)?.(m.image ? { image: m.image, width: m.width, height: m.height, complete: m.complete } : null)
       this.posterWaiters.delete(m.id)
     }
   }
@@ -238,15 +238,35 @@ class EngineClient {
   }
 
   poster(time: Micros): Promise<ArrayBuffer | null> {
+    return this.snapshot(time).then((r) => r?.image ?? null)
+  }
+
+  /** Render one composited frame off-screen (same renderer as export). Null while playing. */
+  snapshot(time: Micros, opts: SnapshotOptions = {}): Promise<Snapshot | null> {
     const id = this.nextPoster++
     return new Promise((resolve) => {
       this.posterWaiters.set(id, resolve)
-      this.send({ type: 'poster', time, id })
+      this.send({ type: 'poster', time, id, width: opts.width, mime: opts.mime, quality: opts.quality })
       setTimeout(() => {
         if (this.posterWaiters.delete(id)) resolve(null)
-      }, 5000)
+      }, opts.timeoutMs ?? 5000)
     })
   }
+}
+
+export interface SnapshotOptions {
+  width?: number
+  mime?: 'image/jpeg' | 'image/png'
+  quality?: number
+  timeoutMs?: number
+}
+
+export interface Snapshot {
+  image: ArrayBuffer
+  width: number
+  height: number
+  /** False if some layer wasn't decoded in time (the frame may be missing it). */
+  complete: boolean
 }
 
 let instance: EngineClient | null = null

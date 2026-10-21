@@ -21,10 +21,21 @@
   "build": {
     "appId": "dev.trailerv.editor",
     "productName": "Trailer-V",
-    "directories": { "output": "dist", "buildResources": "build" },
-    "files": ["out/**", "package.json"],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
     "asar": true,
-    "win": { "target": ["nsis"], "icon": "build/icon.ico" },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
@@ -37,6 +48,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/server": "^2.3.1",
     "chokidar": "^5.0.0",
     "zod": "^4.6.7"
   },

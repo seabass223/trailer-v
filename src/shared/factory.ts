@@ -38,23 +38,38 @@ export interface TextStyle {
   bold: boolean
   italic: boolean
   align: 'left' | 'center' | 'right'
+  /** CSS weight; overrides `bold`. 700 is the bold mark, 400 plain, others an explicit weight. */
+  weight?: number
+  /** Tracking in em (scales with the font size). */
+  letterSpacing?: number
+  underline?: boolean
+}
+
+export const DEFAULT_TEXT_STYLE: TextStyle = {
+  fontFamily: 'Segoe UI',
+  fontSize: 96,
+  color: '#ffffff',
+  bold: true,
+  italic: false,
+  align: 'center',
+}
+
+/** Marks for one run, encoded the way the inspector's TipTap editor writes them. */
+export function textMarks(s: Omit<TextStyle, 'align'>): NonNullable<RichNode['marks']> {
+  const weight = s.weight ?? (s.bold ? 700 : 400)
+  const attrs: Record<string, unknown> = { fontFamily: s.fontFamily, fontSize: `${s.fontSize}px`, color: s.color }
+  if (weight !== 400 && weight !== 700) attrs.fontWeight = String(weight)
+  if (s.letterSpacing) attrs.letterSpacing = `${Math.round(s.letterSpacing * 1000) / 1000}em`
+  const marks: NonNullable<RichNode['marks']> = [{ type: 'textStyle', attrs }]
+  if (weight === 700) marks.push({ type: 'bold' })
+  if (s.italic) marks.push({ type: 'italic' })
+  if (s.underline) marks.push({ type: 'underline' })
+  return marks
 }
 
 export function textDoc(text: string, style: Partial<TextStyle> = {}): RichNode {
-  const s: TextStyle = {
-    fontFamily: 'Segoe UI',
-    fontSize: 96,
-    color: '#ffffff',
-    bold: true,
-    italic: false,
-    align: 'center',
-    ...style,
-  }
-  const marks: NonNullable<RichNode['marks']> = [
-    { type: 'textStyle', attrs: { fontFamily: s.fontFamily, fontSize: `${s.fontSize}px`, color: s.color } },
-  ]
-  if (s.bold) marks.push({ type: 'bold' })
-  if (s.italic) marks.push({ type: 'italic' })
+  const s: TextStyle = { ...DEFAULT_TEXT_STYLE, ...style }
+  const marks = textMarks(s)
   return {
     type: 'doc',
     content: text.split(/\r?\n/).map((line) => ({

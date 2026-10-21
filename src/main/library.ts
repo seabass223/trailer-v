@@ -36,18 +36,35 @@ export async function scanFolder(folder: string): Promise<MediaFile[]> {
 let watcher: FSWatcher | null = null
 let debounce: NodeJS.Timeout | null = null
 
-/** Watches one library folder; rescans (debounced) when supported files change. */
+/**
+ * Watches one library folder; rescans (debounced) when supported files change. Each library scan
+ * calls this again, which also replaces a watcher that has stopped reporting (seen on Windows:
+ * a folder's root went deaf while its subfolders kept reporting), so the editor rescans on
+ * focus and after its own copies rather than trusting the watcher alone.
+ */
 export function watchFolder(folder: string, onChange: (files: MediaFile[]) => void): void {
   void watcher?.close()
-  watcher = watch(folder, {
+  const w = watch(folder, {
     ignoreInitial: true,
     depth: 8,
     awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 },
     ignored: (p, s) => !!s?.isFile() && !SUPPORTED_EXTENSIONS[extname(p).slice(1).toLowerCase()],
   })
-  watcher.on('all', (_event, path) => {
+  watcher = w
+  const rescan = () => scanFolder(folder).then(onChange, (e: Error) => console.log(`[library] rescan of ${folder} failed: ${e.message}`))
+  w.on('all', (_event, path) => {
     if (basename(path).startsWith('~')) return
     if (debounce) clearTimeout(debounce)
-    debounce = setTimeout(async () => onChange(await scanFolder(folder)), 250)
+    debounce = setTimeout(rescan, 250)
+  })
+  // A watcher that errors stops reporting: start a fresh one and catch up on what it missed.
+  w.on('error', (e) => {
+    if (watcher !== w) return
+    console.log(`[library] watcher error on ${folder}: ${(e as Error).message}; restarting`)
+    setTimeout(() => {
+      if (watcher !== w) return
+      watchFolder(folder, onChange)
+      void rescan()
+    }, 500)
   })
 }

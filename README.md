@@ -62,10 +62,26 @@ npm run test:e2e
 - `npm run test:e2e` builds the app and drives it with Playwright, including a real NVENC export checked with `ffprobe`.
 - To run the E2E suite against the packaged app, set `TRAILER_EXE=dist\win-unpacked\Trailer-V.exe`.
 
+## MCP server (agents)
+
+While Trailer-V is running, it serves an MCP server at `http://127.0.0.1:7863/mcp` (Streamable HTTP, localhost only). An agent can create and open projects, put media and styled titles on the timeline, trim, move, cross-fade, layer tracks, set volume envelopes and ducking, render frames or a storyboard to check the cut, export with NVENC, and generate music with YuE2 Studio. Every edit shows live in the editor, is one undo step, and autosaves.
+
+The repo's `.mcp.json` registers it for Claude Code. To add it elsewhere:
+
+```bash
+claude mcp add --transport http trailer-v http://127.0.0.1:7863/mcp
+```
+
+- `TRAILER_MCP_PORT` changes the port. `TRAILER_MCP=0` turns the server off.
+- Exports and song generation run as jobs: the tool waits up to 45 s, then `job_status` follows the rest.
+- The server lives in `src/main/mcp/`. Editor-side handlers are in `src/renderer/src/features/automation/`.
+
 ## Where things live
 
 - **Projects:** `Documents\Trailer-V\Projects\*.tvproj` (JSON, autosaved). Deleting a project moves it to the Recycle Bin.
-- **Media:** read directly from the folder you pick. It is never copied or managed.
+- **Media:** read directly from the folder you pick. Trailer-V never moves or manages it.
+  - To add files, drag them from File Explorer onto a library tab (Media, Text, Image or Audio) or the panel under it. They're copied into the media folder with a normal Windows copy: Windows' own progress dialog for big files, its Replace or Skip prompt when a name already exists, and Ctrl+Z in Explorer undoes it. A tab only takes its own kind of file.
+  - Right-click any library tab and choose **Open in Explorer** to open the media folder.
 
 ## Performance (RTX 3060, measured by the E2E suite)
 

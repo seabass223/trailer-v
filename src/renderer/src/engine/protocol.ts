@@ -15,7 +15,8 @@ export type EngineInbound =
   | { type: 'preroll'; id: number }
   /** Hide one text clip while it's edited inline over the preview. */
   | { type: 'hide-clip'; clipId: string | null }
-  | { type: 'poster'; time: number; id: number }
+  /** Render one frame off-screen (posters, MCP snapshots). Width defaults to 480. */
+  | { type: 'poster'; time: number; id: number; width?: number; mime?: 'image/jpeg' | 'image/png'; quality?: number }
   /** Debug: log decoder state. */
   | { type: 'describe' }
   /** Verbose decoder/drop logging (on while the perf HUD is open). */
@@ -24,7 +25,7 @@ export type EngineInbound =
 export type EngineOutbound =
   | { type: 'ready'; adapter: string }
   | { type: 'error'; message: string }
-  | { type: 'poster'; id: number; jpeg: ArrayBuffer | null }
+  | { type: 'poster'; id: number; image: ArrayBuffer | null; width: number; height: number; complete: boolean }
   | { type: 'log'; message: string }
   | { type: 'prerolled'; id: number }
 

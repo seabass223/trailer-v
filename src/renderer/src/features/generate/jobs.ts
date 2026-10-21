@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { toast } from 'sonner'
 import { engine } from '@/engine/client'
 import { addFile } from '@/features/editor/actions'
+import { refreshLibrary } from '@/features/library/useLibrary'
 import type { GenEvent } from '@shared/ipc'
 
 /** Views currently on screen; their own UI shows progress, so the toast stays quiet meanwhile. */
@@ -49,6 +50,7 @@ export function useGenerateJobs(): void {
           }
           case 'delivered':
             jobView.delete(e.jobId)
+            void refreshLibrary()
             toast.success('Song ready', {
               id: e.jobId,
               description: `AI Audio / ${e.file.name}`,

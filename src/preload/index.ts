@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { TrailerApi } from '../shared/ipc'
 
 const api: TrailerApi = {
@@ -20,6 +20,9 @@ const api: TrailerApi = {
       return () => ipcRenderer.removeListener('library:changed', listener)
     },
     readText: (path) => ipcRenderer.invoke('library:readText', path),
+    copyIn: (paths, folder) => ipcRenderer.invoke('library:copyIn', paths, folder),
+    openFolder: (folder) => ipcRenderer.invoke('library:openFolder', folder),
+    pathForFile: (file) => webUtils.getPathForFile(file),
   },
   dialog: {
     pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pickFolder', defaultPath),
@@ -51,6 +54,15 @@ const api: TrailerApi = {
       ipcRenderer.on('generate:event', listener)
       return () => ipcRenderer.removeListener('generate:event', listener)
     },
+  },
+  automation: {
+    onCall: (cb) => {
+      const listener = (_e: unknown, id: number, method: string, params: unknown) => cb(id, method, params)
+      ipcRenderer.on('automation:call', listener)
+      return () => ipcRenderer.removeListener('automation:call', listener)
+    },
+    reply: (id, ok, value) => ipcRenderer.send('automation:reply', id, ok, value),
+    ready: () => ipcRenderer.send('automation:ready'),
   },
   mediaUrl: (path) => `media://local/${encodeURIComponent(path)}`,
 }

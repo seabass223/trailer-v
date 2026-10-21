@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { engine } from '@/engine/client'
+import { startAutomation } from '@/features/automation/automation'
 import { Editor } from '@/features/editor/Editor'
 import { HomeScreen } from '@/features/home/HomeScreen'
 import { flushSave, savePoster, startSync } from '@/state/persistence'
@@ -13,6 +14,8 @@ export function App() {
   const [opening, setOpening] = useState(false)
 
   useEffect(() => startSync(), [])
+  // Serve the in-app MCP server's editor calls (src/main/mcp).
+  useEffect(() => startAutomation(), [])
   // Warm the GPU device, decoders' worker and audio graph while the user is on the home screen.
   useEffect(() => void engine(), [])
   useEffect(() => {
